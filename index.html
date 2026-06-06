@@ -8,6 +8,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="apple-mobile-web-app-title" content="withfriends"/>
+<link rel="manifest" href="manifest.json"/>
+<link rel="icon" href="icon-192.png"/>
+<link rel="apple-touch-icon" href="icon-192.png"/>
 <title>withfriends</title>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -23,6 +26,14 @@
   ::-webkit-scrollbar{width:0;}
   textarea{font-family:'DM Sans','Noto Sans SC',system-ui,sans-serif;}
 </style>
+<script>
+  // Register Service Worker for PWA install
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    });
+  }
+</script>
 </head>
 <body>
 <div id="root"></div>
@@ -51,23 +62,39 @@ const MAP_MODES = [
   { id:"bicycling", label:"骑行", icon:"🚴" },
 ];
 
+const BAIDU_MODE = { driving:"driving", transit:"transit", walking:"walking", bicycling:"riding" };
+
+// ─── Map URL builders ─────────────────────────────────────────────────────────
+// Google Maps: destination pre-filled, opens in direction mode
 function buildGoogleUrl(r, mode) {
   const dest = encodeURIComponent(r.address);
   let url = `https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=${mode}`;
   if (r.foundAt) url += `&origin=${encodeURIComponent(r.foundAt)}`;
   return url;
 }
+
+// Apple Maps: daddr = destination address
 function buildAppleUrl(r, mode) {
   const m = { driving:"d", transit:"r", walking:"w", bicycling:"b" };
   return `maps://?daddr=${encodeURIComponent(r.address)}&dirflg=${m[mode]||"d"}`;
 }
-function buildBaiduUrl(r) {
-  return `https://map.baidu.com/search/${encodeURIComponent(r.address)}`;
+
+// Baidu Maps: direction API — destination is the restaurant, origin is current location
+// This opens Baidu Maps web with the restaurant pre-filled as destination, ready to navigate
+function buildBaiduUrl(r, mode) {
+  const dest = encodeURIComponent(r.name + " " + r.address);
+  const bMode = BAIDU_MODE[mode] || "driving";
+  const origin = r.foundAt
+    ? encodeURIComponent(r.foundAt)
+    : encodeURIComponent("我的位置");
+  return `https://api.map.baidu.com/direction?origin=${origin}&destination=${dest}&mode=${bMode}&output=html&src=webapp.withfriends`;
 }
+
 function getCatColor(cats, name) {
   return (cats.find(c => c.name === name) || {}).color || "#7a7a8a";
 }
 
+// ─── Logo ─────────────────────────────────────────────────────────────────────
 function Logo() {
   return (
     <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
@@ -110,8 +137,7 @@ function SwipeCard({ onDelete, children }) {
   function onTouchStart(e) {
     startX.current = e.touches[0].clientX;
     startY.current = e.touches[0].clientY;
-    isHoriz.current = false;
-    setSwiping(false);
+    isHoriz.current = false; setSwiping(false);
   }
   function onTouchMove(e) {
     const dx = e.touches[0].clientX - startX.current;
@@ -152,9 +178,10 @@ function SwipeCard({ onDelete, children }) {
   );
 }
 
+// ─── Main App ─────────────────────────────────────────────────────────────────
 function App() {
   const [restaurants, setRestaurants] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("wf_r_v2")) || []; } catch { return []; }
+    try { return JSON.parse(localStorage.getItem("wf_r_v3")) || []; } catch { return []; }
   });
   const [categories, setCategories] = useState(() => {
     try { return JSON.parse(localStorage.getItem("wf_c_v1")) || DEFAULT_CATEGORIES; } catch { return DEFAULT_CATEGORIES; }
@@ -172,7 +199,7 @@ function App() {
   useEffect(()=>{
     if(!form.category&&categories.length>0) setForm(f=>({...f,category:categories[0].name}));
   },[categories]);
-  useEffect(()=>{ try{localStorage.setItem("wf_r_v2",JSON.stringify(restaurants));}catch{} },[restaurants]);
+  useEffect(()=>{ try{localStorage.setItem("wf_r_v3",JSON.stringify(restaurants));}catch{} },[restaurants]);
   useEffect(()=>{ try{localStorage.setItem("wf_c_v1",JSON.stringify(categories));}catch{} },[categories]);
 
   const filtered = restaurants.filter(r => {
@@ -224,8 +251,6 @@ function App() {
   const wantCount = restaurants.filter(r=>r.status==="想去").length;
   const beenCount = restaurants.filter(r=>r.status==="已去").length;
   const groups = buildGroups(filtered);
-
-  const S = styles;
 
   return (
     <div style={S.root}>
@@ -383,12 +408,12 @@ function App() {
   );
 }
 
+// ─── Card ─────────────────────────────────────────────────────────────────────
 function Card({ r, navMode, categories, onOpen, onToggle, onRate }) {
   const color = getCatColor(categories, r.category);
   const been = r.status==="已去";
   const warn = been&&r.rating>0&&r.rating<=2;
   const accent = warn?"#f87171":been?"#6ee7b7":color;
-  const S = styles;
   return (
     <div style={{...S.card,borderLeft:`3px solid ${accent}44`}}>
       <div style={S.cardBody} onClick={onOpen}>
@@ -400,7 +425,8 @@ function Card({ r, navMode, categories, onOpen, onToggle, onRate }) {
             {warn?"避雷 ⚠️":been?"✓ 去过":"想去"}
           </span>
         </div>
-        <a href={buildBaiduUrl(r)} target="_blank" rel="noreferrer"
+        {/* Click address → Baidu Maps with destination pre-filled */}
+        <a href={buildBaiduUrl(r, navMode)} target="_blank" rel="noreferrer"
           style={S.cardAddrLink} onClick={e=>e.stopPropagation()}>📍 {r.address}</a>
         {been&&r.dishes&&<div style={S.cardDishes}>🍴 {r.dishes}</div>}
         {been&&r.rating>0&&(
@@ -429,13 +455,14 @@ function Card({ r, navMode, categories, onOpen, onToggle, onRate }) {
           style={S.mapBtn} onClick={e=>e.stopPropagation()}>G</a>
         <a href={buildAppleUrl(r,navMode)} target="_blank" rel="noreferrer"
           style={{...S.mapBtn,background:"#1a1a2e",color:"#a0a8c0"}} onClick={e=>e.stopPropagation()}>A</a>
-        <a href={buildBaiduUrl(r)} target="_blank" rel="noreferrer"
+        <a href={buildBaiduUrl(r,navMode)} target="_blank" rel="noreferrer"
           style={{...S.mapBtn,background:"#1a2035",color:"#60a0e0"}} onClick={e=>e.stopPropagation()}>百</a>
       </div>
     </div>
   );
 }
 
+// ─── Detail View ──────────────────────────────────────────────────────────────
 function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onToggle, onRate, onDishes }) {
   const color = getCatColor(categories, r.category);
   const been = r.status==="已去";
@@ -443,7 +470,6 @@ function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onTo
   const [editDishes, setEditDishes] = useState(false);
   const [dishVal, setDishVal] = useState(r.dishes||"");
   useEffect(()=>setDishVal(r.dishes||""),[r.dishes]);
-  const S = styles;
   return (
     <main style={S.main}>
       <div style={S.formCard}>
@@ -468,10 +494,11 @@ function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onTo
             </span>
           </div>
         </div>
+
         <div style={S.detailSection}>
           <div style={S.detailRow}>
             <span style={S.di}>📍</span>
-            <a href={buildBaiduUrl(r)} target="_blank" rel="noreferrer" style={S.addrLink}>{r.address}</a>
+            <a href={buildBaiduUrl(r, navMode)} target="_blank" rel="noreferrer" style={S.addrLink}>{r.address}</a>
           </div>
           {r.foundAt&&<div style={S.detailRow}><span style={S.di}>🔍</span><span style={S.dv}>发现于 {r.foundAt}</span></div>}
           {r.note&&<div style={S.detailRow}><span style={S.di}>✏️</span><span style={S.dv}>{r.note}</span></div>}
@@ -481,6 +508,7 @@ function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onTo
             </div>
           )}
         </div>
+
         {been&&(
           <div style={S.detailSection}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
@@ -504,6 +532,7 @@ function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onTo
             )}
           </div>
         )}
+
         <div style={{...S.detailSection,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <button style={{...S.toggleBtn,color:been?"#6ee7b7":"#f0b429",
             borderColor:been?"#6ee7b730":"#f0b42930"}} onClick={onToggle}>
@@ -516,6 +545,7 @@ function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onTo
             </div>
           )}
         </div>
+
         <div style={S.detailNavSection}>
           <div style={{fontSize:10,color:"#334",marginBottom:10,letterSpacing:1,textTransform:"uppercase"}}>Navigation</div>
           <div style={S.catRow}>
@@ -534,7 +564,7 @@ function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onTo
               background:"#181828",color:"#a0b0d0",border:"1px solid #20203a",marginBottom:8}}>
             🍎 Apple Maps
           </a>
-          <a href={buildBaiduUrl(r)} target="_blank" rel="noreferrer"
+          <a href={buildBaiduUrl(r,navMode)} target="_blank" rel="noreferrer"
             style={{...S.submitBtn,display:"block",textAlign:"center",textDecoration:"none",
               background:"#151f30",color:"#60a0e0",border:"1px solid #1e3050"}}>
             🔵 百度地图
@@ -545,11 +575,11 @@ function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onTo
   );
 }
 
+// ─── Settings View ────────────────────────────────────────────────────────────
 function SettingsView({ categories, setCategories, onBack }) {
   const [newName, setNewName] = useState("");
   const [picked, setPicked] = useState(COLOR_PALETTE[0]);
   const [err, setErr] = useState("");
-  const S = styles;
 
   function doAdd() {
     const name = newName.trim();
@@ -606,7 +636,8 @@ function SettingsView({ categories, setCategories, onBack }) {
   );
 }
 
-const styles = {
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const S = {
   root:{minHeight:"100vh",background:"#0c0c14",color:"#d0d0e0",paddingBottom:90},
   header:{background:"#0e0e1a",borderBottom:"1px solid #16162a",position:"sticky",top:0,zIndex:100,backdropFilter:"blur(12px)"},
   headerInner:{maxWidth:600,margin:"0 auto",padding:"11px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"},
