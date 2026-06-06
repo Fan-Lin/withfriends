@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="theme-color" content="#0c0c14"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="withfriends"/>
+<title>withfriends</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,600;9..40,700;9..40,800&family=Noto+Sans+SC:wght@400;700&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#0c0c14;color:#d0d0e0;font-family:'DM Sans','Noto Sans SC',system-ui,sans-serif;overscroll-behavior:none;}
+  .add-btn:active,.submit-btn:active{transform:scale(0.97);}
+  input::placeholder,textarea::placeholder{color:#1e1e2e;}
+  input:focus,textarea:focus{border-color:#2a2a44!important;outline:none;}
+  a{-webkit-tap-highlight-color:transparent;}
+  ::-webkit-scrollbar{width:0;}
+  textarea{font-family:'DM Sans','Noto Sans SC',system-ui,sans-serif;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const DEFAULT_CATEGORIES = [
+  { name:"川菜", color:"#e85d26" },
+  { name:"粤菜", color:"#c8973a" },
+  { name:"日料", color:"#5f8fcc" },
+  { name:"烤肉", color:"#b5451b" },
+  { name:"火锅", color:"#d13b2a" },
+  { name:"面食", color:"#c8843a" },
+  { name:"其他", color:"#7a7a8a" },
+];
+
+const COLOR_PALETTE = [
+  "#e85d26","#c8973a","#5f8fcc","#b5451b","#d13b2a","#c8843a","#7a7a8a",
+  "#4a9e6e","#8a5ccc","#cc5c8a","#6ab0a0","#a0886a","#5588aa","#9a7040",
+];
+
+const MAP_MODES = [
+  { id:"driving", label:"开车", icon:"🚗" },
+  { id:"transit", label:"公交", icon:"🚌" },
+  { id:"walking", label:"步行", icon:"🚶" },
+  { id:"bicycling", label:"骑行", icon:"🚴" },
+];
+
+function buildGoogleUrl(r, mode) {
+  const dest = encodeURIComponent(r.address);
+  let url = `https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=${mode}`;
+  if (r.foundAt) url += `&origin=${encodeURIComponent(r.foundAt)}`;
+  return url;
+}
+function buildAppleUrl(r, mode) {
+  const m = { driving:"d", transit:"r", walking:"w", bicycling:"b" };
+  return `maps://?daddr=${encodeURIComponent(r.address)}&dirflg=${m[mode]||"d"}`;
+}
+function buildBaiduUrl(r) {
+  return `https://map.baidu.com/search/${encodeURIComponent(r.address)}`;
+}
+function getCatColor(cats, name) {
+  return (cats.find(c => c.name === name) || {}).color || "#7a7a8a";
+}
+
+function Logo() {
+  return (
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+      <circle cx="18" cy="21" r="10" stroke="#ffffff40" strokeWidth="1.5"/>
+      <path d="M13 11 Q14 9 13 7" stroke="#f0b429" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M18 10 Q19 8 18 6" stroke="#f0b429" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M23 11 Q24 9 23 7" stroke="#f0b429" strokeWidth="1.5" strokeLinecap="round"/>
+      <line x1="12.5" y1="17" x2="12.5" y2="25" stroke="#ffffff80" strokeWidth="1.4" strokeLinecap="round"/>
+      <line x1="11.5" y1="17" x2="11.5" y2="20" stroke="#ffffff50" strokeWidth="1.2" strokeLinecap="round"/>
+      <line x1="13.5" y1="17" x2="13.5" y2="20" stroke="#ffffff50" strokeWidth="1.2" strokeLinecap="round"/>
+      <ellipse cx="23.5" cy="17" rx="1.5" ry="2" stroke="#ffffff80" strokeWidth="1.3"/>
+      <line x1="23.5" y1="19" x2="23.5" y2="25" stroke="#ffffff80" strokeWidth="1.4" strokeLinecap="round"/>
+      <path d="M17.5 22 C17.5 21 16 20 16 21.5 C16 23 17.5 24 17.5 24 C17.5 24 19 23 19 21.5 C19 20 17.5 21 17.5 22Z" fill="#f87171"/>
+    </svg>
+  );
+}
+
+function Stars({ value, onChange }) {
+  const [hov, setHov] = useState(0);
+  return (
+    <div style={{display:"flex",gap:2}}>
+      {[1,2,3,4,5].map(n => (
+        <button key={n} style={{background:"none",border:"none",cursor:"pointer",
+          padding:"2px 1px",fontSize:17,color:(hov||value)>=n?"#f0b429":"#252538",lineHeight:1}}
+          onMouseEnter={()=>setHov(n)} onMouseLeave={()=>setHov(0)}
+          onClick={()=>onChange(value===n?0:n)}>★</button>
+      ))}
+    </div>
+  );
+}
+
+function SwipeCard({ onDelete, children }) {
+  const [offsetX, setOffsetX] = useState(0);
+  const [swiping, setSwiping] = useState(false);
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const isHoriz = useRef(false);
+  const THRESHOLD = 80;
+
+  function onTouchStart(e) {
+    startX.current = e.touches[0].clientX;
+    startY.current = e.touches[0].clientY;
+    isHoriz.current = false;
+    setSwiping(false);
+  }
+  function onTouchMove(e) {
+    const dx = e.touches[0].clientX - startX.current;
+    const dy = e.touches[0].clientY - startY.current;
+    if (!isHoriz.current && Math.abs(dy) > Math.abs(dx)) return;
+    if (!isHoriz.current && Math.abs(dx) > 6) isHoriz.current = true;
+    if (!isHoriz.current) return;
+    e.preventDefault();
+    setOffsetX(Math.min(0, dx));
+    setSwiping(true);
+  }
+  function onTouchEnd() {
+    setOffsetX(offsetX < -THRESHOLD ? -THRESHOLD : 0);
+    setSwiping(false);
+  }
+  const revealed = offsetX <= -THRESHOLD;
+
+  return (
+    <div style={{position:"relative",overflow:"hidden",borderRadius:12}}>
+      <div style={{position:"absolute",right:0,top:0,bottom:0,width:80,
+        background:"#d13b2a",display:"flex",alignItems:"center",justifyContent:"center",
+        borderRadius:"0 12px 12px 0"}}>
+        <button style={{background:"none",border:"none",color:"#fff",fontSize:12,
+          fontWeight:700,cursor:"pointer",fontFamily:"inherit",
+          display:"flex",flexDirection:"column",alignItems:"center",gap:2}}
+          onClick={()=>{if(window.confirm("删除这家？"))onDelete();}}>
+          <span style={{fontSize:18}}>🗑️</span><span>删除</span>
+        </button>
+      </div>
+      <div style={{transform:`translateX(${offsetX}px)`,
+        transition:swiping?"none":"transform 0.25s cubic-bezier(.4,0,.2,1)",
+        position:"relative",zIndex:1}}
+        onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+        onClick={revealed?()=>setOffsetX(0):undefined}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [restaurants, setRestaurants] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("wf_r_v2")) || []; } catch { return []; }
+  });
+  const [categories, setCategories] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("wf_c_v1")) || DEFAULT_CATEGORIES; } catch { return DEFAULT_CATEGORIES; }
+  });
+  const [view, setView] = useState("list");
+  const [selected, setSelected] = useState(null);
+  const [navMode, setNavMode] = useState("transit");
+  const [fStatus, setFStatus] = useState("全部");
+  const [fCat, setFCat] = useState("全部");
+  const [search, setSearch] = useState("");
+  const [groupBy, setGroupBy] = useState("none");
+  const [collapsed, setCollapsed] = useState({});
+  const [form, setForm] = useState({name:"",address:"",foundAt:"",category:"",note:"",tags:""});
+
+  useEffect(()=>{
+    if(!form.category&&categories.length>0) setForm(f=>({...f,category:categories[0].name}));
+  },[categories]);
+  useEffect(()=>{ try{localStorage.setItem("wf_r_v2",JSON.stringify(restaurants));}catch{} },[restaurants]);
+  useEffect(()=>{ try{localStorage.setItem("wf_c_v1",JSON.stringify(categories));}catch{} },[categories]);
+
+  const filtered = restaurants.filter(r => {
+    if(fStatus==="想去"&&r.status!=="想去") return false;
+    if(fStatus==="已去"&&r.status!=="已去") return false;
+    if(fStatus==="避雷"&&!(r.status==="已去"&&r.rating>0&&r.rating<=2)) return false;
+    if(fCat!=="全部"&&r.category!==fCat) return false;
+    if(search&&!r.name.includes(search)&&!r.address.includes(search)&&!(r.note||"").includes(search)) return false;
+    return true;
+  });
+
+  function buildGroups(list) {
+    if(groupBy==="none") return [{key:null,items:list}];
+    if(groupBy==="category") {
+      const map={};
+      list.forEach(r=>{ const k=r.category||"其他"; if(!map[k])map[k]=[]; map[k].push(r); });
+      return Object.entries(map).map(([key,items])=>({key,items}));
+    }
+    if(groupBy==="status") {
+      const map={};
+      list.forEach(r=>{ const k=r.status||"想去"; if(!map[k])map[k]=[]; map[k].push(r); });
+      return ["想去","已去"].filter(k=>map[k]).map(key=>({key,items:map[key]}));
+    }
+    return [{key:null,items:list}];
+  }
+
+  function handleAdd() {
+    if(!form.name.trim()||!form.address.trim()) return;
+    const cat = form.category||categories[0]?.name||"其他";
+    setRestaurants(prev=>[{
+      id:Date.now(),...form,category:cat,status:"想去",rating:0,dishes:"",
+      tags:form.tags.split(/[,，\s]+/).filter(Boolean),
+      createdAt:new Date().toLocaleDateString("zh-CN"),
+    },...prev]);
+    setForm({name:"",address:"",foundAt:"",category:cat,note:"",tags:""});
+    setView("list");
+  }
+
+  function handleDelete(id) {
+    setRestaurants(prev=>prev.filter(r=>r.id!==id));
+    if(selected?.id===id){setView("list");setSelected(null);}
+  }
+
+  function update(id, patch) {
+    setRestaurants(prev=>prev.map(r=>r.id===id?{...r,...patch}:r));
+    if(selected?.id===id) setSelected(s=>({...s,...patch}));
+  }
+
+  const wantCount = restaurants.filter(r=>r.status==="想去").length;
+  const beenCount = restaurants.filter(r=>r.status==="已去").length;
+  const groups = buildGroups(filtered);
+
+  const S = styles;
+
+  return (
+    <div style={S.root}>
+      <header style={S.header}>
+        <div style={S.headerInner}>
+          <div style={S.logo}>
+            <Logo/>
+            <div style={{marginLeft:10}}>
+              <div style={S.logoTitle}>withfriends</div>
+              <div style={S.logoSub}>{wantCount} to visit · {beenCount} been</div>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button style={S.iconBtn} onClick={()=>setView("settings")}>⚙️</button>
+            <button style={S.addBtn} className="add-btn" onClick={()=>{
+              setForm({name:"",address:"",foundAt:"",category:categories[0]?.name||"",note:"",tags:""});
+              setView("add");
+            }}>+ Add</button>
+          </div>
+        </div>
+      </header>
+
+      {view==="list" && (
+        <main style={S.main}>
+          <input style={S.searchInput} placeholder="Search…" value={search}
+            onChange={e=>setSearch(e.target.value)}/>
+          <div style={S.tabs}>
+            {["全部","想去","已去","避雷"].map(t=>(
+              <button key={t} style={{...S.tab,...(fStatus===t?S.tabActive:{})}}
+                onClick={()=>setFStatus(t)}>{t}</button>
+            ))}
+          </div>
+          <div style={S.filterRow}>
+            {["全部",...categories.map(c=>c.name)].map(c=>{
+              const col=c!=="全部"?getCatColor(categories,c):null;
+              return (
+                <button key={c} style={{...S.filterChip,...(fCat===c?S.filterChipActive:{}),
+                  ...(c!=="全部"&&fCat!==c?{borderColor:col+"44",color:col}:{})}}
+                  onClick={()=>setFCat(c)}>{c}</button>
+              );
+            })}
+          </div>
+          <div style={S.groupRow}>
+            <span style={S.groupLabel}>归类</span>
+            {[["none","不分组"],["category","按菜系"],["status","按状态"]].map(([val,label])=>(
+              <button key={val} style={{...S.groupChip,...(groupBy===val?S.groupChipActive:{})}}
+                onClick={()=>setGroupBy(val)}>{label}</button>
+            ))}
+          </div>
+
+          {filtered.length===0?(
+            <div style={S.empty}>
+              <div style={{fontSize:38,marginBottom:10}}>🍽️</div>
+              <div style={{color:"#33334a",fontSize:13}}>
+                {restaurants.length===0?"Add your first spot":"No matches"}
+              </div>
+            </div>
+          ):(
+            <div style={S.grid}>
+              {groups.map(({key,items})=>(
+                <div key={key||"all"}>
+                  {key!==null&&(
+                    <button style={{...S.groupHeader,
+                      borderLeft:groupBy==="category"?`3px solid ${getCatColor(categories,key)}`:"3px solid #446"}}
+                      onClick={()=>setCollapsed(p=>({...p,[key]:!p[key]}))}>
+                      <span style={{display:"flex",alignItems:"center",gap:6}}>
+                        {groupBy==="status"&&(
+                          <span style={{fontSize:10,padding:"1px 7px",borderRadius:6,fontWeight:700,
+                            background:key==="已去"?"#6ee7b718":"#ffffff10",
+                            color:key==="已去"?"#6ee7b7":"#888"}}>{key}</span>
+                        )}
+                        {groupBy==="category"&&(
+                          <span style={{fontSize:13,fontWeight:600,color:"#d0d0e0"}}>{key}</span>
+                        )}
+                        <span style={{fontSize:11,color:"#446"}}>{items.length} 家</span>
+                      </span>
+                      <span style={{fontSize:13,color:"#334",display:"inline-block",
+                        transform:collapsed[key]?"rotate(-90deg)":"rotate(0deg)",transition:"transform 0.2s"}}>▾</span>
+                    </button>
+                  )}
+                  {!collapsed[key]&&items.map(r=>(
+                    <SwipeCard key={r.id} onDelete={()=>handleDelete(r.id)}>
+                      <Card r={r} navMode={navMode} categories={categories}
+                        onOpen={()=>{setSelected(r);setView("detail");}}
+                        onToggle={()=>update(r.id,{status:r.status==="想去"?"已去":"想去"})}
+                        onRate={rating=>update(r.id,{rating})}/>
+                    </SwipeCard>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={S.navBar}>
+            <span style={S.navBarLabel}>导航</span>
+            {MAP_MODES.map(m=>(
+              <button key={m.id} style={{...S.navChip,...(navMode===m.id?S.navChipActive:{})}}
+                onClick={()=>setNavMode(m.id)}>{m.icon} {m.label}</button>
+            ))}
+          </div>
+        </main>
+      )}
+
+      {view==="add"&&(
+        <main style={S.main}>
+          <div style={S.formCard}>
+            <button style={S.backBtn} onClick={()=>setView("list")}>← Back</button>
+            <h2 style={S.formTitle}>Add a spot</h2>
+            <label style={S.label}>Name <span style={{color:"#f87171"}}>*</span></label>
+            <input style={S.input} placeholder="Restaurant name" value={form.name}
+              onChange={e=>setForm({...form,name:e.target.value})}/>
+            <label style={S.label}>Address <span style={{color:"#f87171"}}>*</span></label>
+            <input style={S.input} placeholder="Full address for navigation" value={form.address}
+              onChange={e=>setForm({...form,address:e.target.value})}/>
+            <label style={S.label}>Spotted at (starting point)</label>
+            <input style={S.input} placeholder="Where you saw it" value={form.foundAt}
+              onChange={e=>setForm({...form,foundAt:e.target.value})}/>
+            <label style={S.label}>Category</label>
+            <div style={S.catRow}>
+              {categories.map(c=>(
+                <button key={c.name} style={{...S.catChip,
+                  ...(form.category===c.name?{background:c.color,color:"#fff",borderColor:c.color}
+                    :{borderColor:c.color+"66",color:c.color})}}
+                  onClick={()=>setForm({...form,category:c.name})}>{c.name}</button>
+              ))}
+            </div>
+            <label style={S.label}>Note</label>
+            <textarea style={{...S.input,minHeight:64,resize:"vertical"}}
+              placeholder="Vibe, must-orders…" value={form.note}
+              onChange={e=>setForm({...form,note:e.target.value})}/>
+            <label style={S.label}>Tags (comma separated)</label>
+            <input style={S.input} placeholder="spicy late-night" value={form.tags}
+              onChange={e=>setForm({...form,tags:e.target.value})}/>
+            <button style={{...S.submitBtn,opacity:form.name&&form.address?1:0.35}}
+              disabled={!form.name||!form.address} onClick={handleAdd} className="submit-btn">
+              Save spot ✓
+            </button>
+          </div>
+        </main>
+      )}
+
+      {view==="detail"&&selected&&(
+        <DetailView r={selected} navMode={navMode} setNavMode={setNavMode} categories={categories}
+          onBack={()=>setView("list")}
+          onDelete={()=>handleDelete(selected.id)}
+          onToggle={()=>update(selected.id,{status:selected.status==="想去"?"已去":"想去"})}
+          onRate={rating=>update(selected.id,{rating})}
+          onDishes={dishes=>update(selected.id,{dishes})}/>
+      )}
+
+      {view==="settings"&&(
+        <SettingsView categories={categories} setCategories={setCategories} onBack={()=>setView("list")}/>
+      )}
+    </div>
+  );
+}
+
+function Card({ r, navMode, categories, onOpen, onToggle, onRate }) {
+  const color = getCatColor(categories, r.category);
+  const been = r.status==="已去";
+  const warn = been&&r.rating>0&&r.rating<=2;
+  const accent = warn?"#f87171":been?"#6ee7b7":color;
+  const S = styles;
+  return (
+    <div style={{...S.card,borderLeft:`3px solid ${accent}44`}}>
+      <div style={S.cardBody} onClick={onOpen}>
+        <div style={S.cardRow}>
+          <span style={S.cardName}>{r.name}</span>
+          <span style={{...S.statusBadge,
+            background:warn?"#f8717118":been?"#6ee7b718":"#ffffff0a",
+            color:warn?"#f87171":been?"#6ee7b7":"#666"}}>
+            {warn?"避雷 ⚠️":been?"✓ 去过":"想去"}
+          </span>
+        </div>
+        <a href={buildBaiduUrl(r)} target="_blank" rel="noreferrer"
+          style={S.cardAddrLink} onClick={e=>e.stopPropagation()}>📍 {r.address}</a>
+        {been&&r.dishes&&<div style={S.cardDishes}>🍴 {r.dishes}</div>}
+        {been&&r.rating>0&&(
+          <div style={{fontSize:11,color:"#f0b429",letterSpacing:1,marginTop:3}}>
+            {"★".repeat(r.rating)}{"☆".repeat(5-r.rating)}
+          </div>
+        )}
+      </div>
+      <div style={S.cardActions}>
+        <button style={{...S.actionBtn,color:been?"#6ee7b7":"#f0b429",
+          borderColor:been?"#6ee7b722":"#f0b42922"}}
+          onClick={e=>{e.stopPropagation();onToggle();}}>
+          {been?"↩ 想去":"✓ 去了"}
+        </button>
+        {been&&(
+          <div style={{display:"flex",gap:1}} onClick={e=>e.stopPropagation()}>
+            {[1,2,3,4,5].map(n=>(
+              <button key={n} style={{background:"none",border:"none",cursor:"pointer",
+                padding:"2px 1px",fontSize:13,color:r.rating>=n?"#f0b429":"#252538"}}
+                onClick={()=>onRate(r.rating===n?0:n)}>★</button>
+            ))}
+          </div>
+        )}
+        <div style={{flex:1}}/>
+        <a href={buildGoogleUrl(r,navMode)} target="_blank" rel="noreferrer"
+          style={S.mapBtn} onClick={e=>e.stopPropagation()}>G</a>
+        <a href={buildAppleUrl(r,navMode)} target="_blank" rel="noreferrer"
+          style={{...S.mapBtn,background:"#1a1a2e",color:"#a0a8c0"}} onClick={e=>e.stopPropagation()}>A</a>
+        <a href={buildBaiduUrl(r)} target="_blank" rel="noreferrer"
+          style={{...S.mapBtn,background:"#1a2035",color:"#60a0e0"}} onClick={e=>e.stopPropagation()}>百</a>
+      </div>
+    </div>
+  );
+}
+
+function DetailView({ r, navMode, setNavMode, categories, onBack, onDelete, onToggle, onRate, onDishes }) {
+  const color = getCatColor(categories, r.category);
+  const been = r.status==="已去";
+  const warn = been&&r.rating>0&&r.rating<=2;
+  const [editDishes, setEditDishes] = useState(false);
+  const [dishVal, setDishVal] = useState(r.dishes||"");
+  useEffect(()=>setDishVal(r.dishes||""),[r.dishes]);
+  const S = styles;
+  return (
+    <main style={S.main}>
+      <div style={S.formCard}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+          <button style={S.backBtn} onClick={onBack}>← Back</button>
+          <button style={S.deleteBtn2} onClick={()=>{if(window.confirm(`Delete "${r.name}"?`))onDelete();}}>
+            🗑️ 删除
+          </button>
+        </div>
+        <div style={{...S.detailBanner,borderBottom:`1px solid ${color}30`,
+          background:`linear-gradient(135deg,${color}14,transparent)`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <span style={{...S.catBadge,background:color+"22",color}}>{r.category}</span>
+              <h2 style={S.detailName}>{r.name}</h2>
+              <div style={{fontSize:11,color:"#334"}}>Added {r.createdAt}</div>
+            </div>
+            <span style={{...S.statusBadge,fontSize:11,
+              background:warn?"#f8717118":been?"#6ee7b718":"#ffffff0a",
+              color:warn?"#f87171":been?"#6ee7b7":"#666"}}>
+              {warn?"避雷 ⚠️":been?"✓ 去过":"想去"}
+            </span>
+          </div>
+        </div>
+        <div style={S.detailSection}>
+          <div style={S.detailRow}>
+            <span style={S.di}>📍</span>
+            <a href={buildBaiduUrl(r)} target="_blank" rel="noreferrer" style={S.addrLink}>{r.address}</a>
+          </div>
+          {r.foundAt&&<div style={S.detailRow}><span style={S.di}>🔍</span><span style={S.dv}>发现于 {r.foundAt}</span></div>}
+          {r.note&&<div style={S.detailRow}><span style={S.di}>✏️</span><span style={S.dv}>{r.note}</span></div>}
+          {r.tags&&r.tags.length>0&&(
+            <div style={{marginTop:8,display:"flex",gap:4,flexWrap:"wrap"}}>
+              {r.tags.map(t=><span key={t} style={S.tag}>{t}</span>)}
+            </div>
+          )}
+        </div>
+        {been&&(
+          <div style={S.detailSection}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <span style={{fontSize:11,color:"#446",letterSpacing:0.5,textTransform:"uppercase"}}>🍴 点了什么 / 推荐菜</span>
+              <button style={S.editBtn} onClick={()=>setEditDishes(!editDishes)}>
+                {editDishes?"取消":r.dishes?"编辑":"+ 记录"}
+              </button>
+            </div>
+            {editDishes?(
+              <div>
+                <textarea style={{...S.input,minHeight:72,resize:"vertical"}}
+                  placeholder="招牌烤鱼、炒饭、不要放香菜…"
+                  value={dishVal} onChange={e=>setDishVal(e.target.value)}/>
+                <button style={{...S.submitBtn,marginTop:8,padding:"9px"}} className="submit-btn"
+                  onClick={()=>{onDishes(dishVal);setEditDishes(false);}}>保存</button>
+              </div>
+            ):(
+              r.dishes
+                ?<div style={{fontSize:13,color:"#7070a0",lineHeight:1.6}}>{r.dishes}</div>
+                :<div style={{fontSize:12,color:"#222236"}}>还没记录，点「记录」添加</div>
+            )}
+          </div>
+        )}
+        <div style={{...S.detailSection,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <button style={{...S.toggleBtn,color:been?"#6ee7b7":"#f0b429",
+            borderColor:been?"#6ee7b730":"#f0b42930"}} onClick={onToggle}>
+            {been?"↩ 改为想去":"✓ 标记去过"}
+          </button>
+          {been&&(
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:10,color:"#334",marginBottom:3}}>评分</div>
+              <Stars value={r.rating||0} onChange={onRate}/>
+            </div>
+          )}
+        </div>
+        <div style={S.detailNavSection}>
+          <div style={{fontSize:10,color:"#334",marginBottom:10,letterSpacing:1,textTransform:"uppercase"}}>Navigation</div>
+          <div style={S.catRow}>
+            {MAP_MODES.map(m=>(
+              <button key={m.id} style={{...S.catChip,
+                ...(navMode===m.id?{background:"#fff",color:"#0c0c14",borderColor:"#fff"}
+                  :{borderColor:"#1e1e2e",color:"#446"})}}
+                onClick={()=>setNavMode(m.id)}>{m.icon} {m.label}</button>
+            ))}
+          </div>
+          <a href={buildGoogleUrl(r,navMode)} target="_blank" rel="noreferrer"
+            style={{...S.submitBtn,display:"block",textAlign:"center",textDecoration:"none",marginBottom:8}}
+            className="submit-btn">🗺️ Google Maps</a>
+          <a href={buildAppleUrl(r,navMode)} target="_blank" rel="noreferrer"
+            style={{...S.submitBtn,display:"block",textAlign:"center",textDecoration:"none",
+              background:"#181828",color:"#a0b0d0",border:"1px solid #20203a",marginBottom:8}}>
+            🍎 Apple Maps
+          </a>
+          <a href={buildBaiduUrl(r)} target="_blank" rel="noreferrer"
+            style={{...S.submitBtn,display:"block",textAlign:"center",textDecoration:"none",
+              background:"#151f30",color:"#60a0e0",border:"1px solid #1e3050"}}>
+            🔵 百度地图
+          </a>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function SettingsView({ categories, setCategories, onBack }) {
+  const [newName, setNewName] = useState("");
+  const [picked, setPicked] = useState(COLOR_PALETTE[0]);
+  const [err, setErr] = useState("");
+  const S = styles;
+
+  function doAdd() {
+    const name = newName.trim();
+    if(!name) return;
+    if(categories.find(c=>c.name===name)){setErr("已有同名分类");return;}
+    setCategories(prev=>[...prev,{name,color:picked}]);
+    setNewName(""); setErr("");
+  }
+
+  return (
+    <main style={S.main}>
+      <div style={S.formCard}>
+        <button style={S.backBtn} onClick={onBack}>← Back</button>
+        <h2 style={S.formTitle}>菜系分类</h2>
+        <div style={{marginTop:16}}>
+          {categories.map(c=>(
+            <div key={c.name} style={S.settingRow}>
+              <span style={{...S.catBadge,background:c.color+"22",color:c.color,marginRight:8}}>{c.name}</span>
+              <div style={{display:"flex",gap:4,flexWrap:"wrap",flex:1}}>
+                {COLOR_PALETTE.map(col=>(
+                  <button key={col} style={{...S.swatch,background:col,
+                    outline:c.color===col?"2px solid #fff":"none",outlineOffset:2}}
+                    onClick={()=>setCategories(prev=>prev.map(x=>x.name===c.name?{...x,color:col}:x))}/>
+                ))}
+              </div>
+              <button style={S.delCatBtn} onClick={()=>{
+                if(categories.length<=1){setErr("至少保留一个");return;}
+                setCategories(prev=>prev.filter(x=>x.name!==c.name));
+              }}>✕</button>
+            </div>
+          ))}
+        </div>
+        <div style={{...S.detailSection,marginTop:20}}>
+          <div style={S.label}>新增分类</div>
+          <input style={S.input} placeholder="分类名称" value={newName}
+            onChange={e=>{setNewName(e.target.value);setErr("");}}
+            onKeyDown={e=>e.key==="Enter"&&doAdd()}/>
+          <div style={{marginTop:10}}>
+            <div style={S.label}>颜色</div>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+              {COLOR_PALETTE.map(col=>(
+                <button key={col} style={{...S.swatch,background:col,
+                  outline:picked===col?"2px solid #fff":"none",outlineOffset:2}}
+                  onClick={()=>setPicked(col)}/>
+              ))}
+            </div>
+          </div>
+          {err&&<div style={{fontSize:12,color:"#f87171",marginTop:6}}>{err}</div>}
+          <button style={{...S.submitBtn,opacity:newName.trim()?1:0.4}}
+            disabled={!newName.trim()} onClick={doAdd} className="submit-btn">+ 添加</button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+const styles = {
+  root:{minHeight:"100vh",background:"#0c0c14",color:"#d0d0e0",paddingBottom:90},
+  header:{background:"#0e0e1a",borderBottom:"1px solid #16162a",position:"sticky",top:0,zIndex:100,backdropFilter:"blur(12px)"},
+  headerInner:{maxWidth:600,margin:"0 auto",padding:"11px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"},
+  logo:{display:"flex",alignItems:"center"},
+  logoTitle:{fontSize:15,fontWeight:700,letterSpacing:-0.3,color:"#f0f0f8"},
+  logoSub:{fontSize:10,color:"#334",marginTop:1},
+  addBtn:{background:"#fff",color:"#0c0c14",border:"none",borderRadius:16,padding:"7px 16px",fontSize:13,fontWeight:700,cursor:"pointer"},
+  iconBtn:{background:"#14141e",color:"#446",border:"1px solid #1e1e30",borderRadius:16,padding:"7px 11px",fontSize:13,cursor:"pointer"},
+  main:{maxWidth:600,margin:"0 auto",padding:"14px 14px"},
+  searchInput:{width:"100%",background:"#12121c",border:"1px solid #1c1c2e",borderRadius:10,color:"#d0d0e0",padding:"9px 14px",fontSize:14,boxSizing:"border-box",marginBottom:12},
+  tabs:{display:"flex",gap:4,marginBottom:10},
+  tab:{background:"transparent",border:"1px solid #1c1c2e",borderRadius:16,padding:"5px 14px",fontSize:12,cursor:"pointer",color:"#446"},
+  tabActive:{background:"#fff",color:"#0c0c14",borderColor:"#fff",fontWeight:700},
+  filterRow:{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10},
+  filterChip:{background:"transparent",border:"1px solid #1c1c2e",borderRadius:12,padding:"3px 10px",fontSize:11,cursor:"pointer",color:"#446"},
+  filterChipActive:{background:"#fff",borderColor:"#fff",color:"#0c0c14",fontWeight:600},
+  groupRow:{display:"flex",alignItems:"center",gap:5,marginBottom:14,flexWrap:"wrap"},
+  groupLabel:{fontSize:10,color:"#334",letterSpacing:0.5,textTransform:"uppercase",marginRight:2},
+  groupChip:{background:"transparent",border:"1px solid #1c1c2e",borderRadius:12,padding:"3px 10px",fontSize:11,cursor:"pointer",color:"#446"},
+  groupChipActive:{background:"#1e1e30",borderColor:"#2a2a44",color:"#a0a0c0"},
+  groupHeader:{width:"100%",background:"#10101c",border:"none",borderRadius:8,padding:"9px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",marginBottom:4,marginTop:6},
+  empty:{textAlign:"center",padding:"60px 0"},
+  grid:{display:"flex",flexDirection:"column",gap:8},
+  card:{background:"#10101a",border:"1px solid #18182a",borderRadius:12,overflow:"hidden"},
+  cardBody:{padding:"12px 14px 8px",cursor:"pointer"},
+  cardRow:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4},
+  cardName:{fontSize:15,fontWeight:600,color:"#f0f0f8",letterSpacing:-0.2},
+  cardAddrLink:{display:"block",fontSize:12,color:"#60a0e0",marginBottom:2,textDecoration:"none"},
+  cardDishes:{fontSize:11,color:"#446",marginTop:3,lineHeight:1.4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},
+  statusBadge:{fontSize:10,padding:"2px 8px",borderRadius:8,fontWeight:700,letterSpacing:0.2,flexShrink:0,marginLeft:6},
+  cardActions:{display:"flex",alignItems:"center",gap:5,padding:"8px 14px",borderTop:"1px solid #14142a"},
+  actionBtn:{background:"transparent",border:"1px solid",borderRadius:8,padding:"4px 10px",fontSize:11,cursor:"pointer"},
+  mapBtn:{width:28,height:28,background:"#1a1a2c",color:"#668",border:"1px solid #20203a",borderRadius:7,fontSize:11,textAlign:"center",textDecoration:"none",fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0},
+  navBar:{position:"fixed",bottom:0,left:0,right:0,background:"#090910",borderTop:"1px solid #14142a",display:"flex",alignItems:"center",justifyContent:"center",gap:5,padding:"9px 14px",zIndex:200},
+  navBarLabel:{fontSize:10,color:"#224",marginRight:4},
+  navChip:{background:"transparent",border:"1px solid #1c1c2e",borderRadius:14,padding:"5px 9px",fontSize:11,color:"#336",cursor:"pointer"},
+  navChipActive:{background:"#fff",borderColor:"#fff",color:"#0c0c14",fontWeight:700},
+  formCard:{background:"#0f0f1a",border:"1px solid #18182a",borderRadius:14,padding:"20px 18px"},
+  backBtn:{background:"transparent",border:"none",color:"#446",fontSize:13,cursor:"pointer",padding:0,marginBottom:10},
+  formTitle:{fontSize:19,fontWeight:700,color:"#f0f0f8",margin:"0 0 4px",letterSpacing:-0.3},
+  label:{display:"block",fontSize:10,color:"#446",marginBottom:5,marginTop:14,letterSpacing:0.8,textTransform:"uppercase"},
+  input:{width:"100%",background:"#0c0c14",border:"1px solid #1c1c2e",borderRadius:8,color:"#d0d0e0",padding:"10px 12px",fontSize:14,boxSizing:"border-box"},
+  catRow:{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4},
+  catChip:{background:"transparent",border:"1px solid #222",borderRadius:14,padding:"5px 12px",fontSize:12,cursor:"pointer"},
+  submitBtn:{width:"100%",background:"#fff",color:"#0c0c14",border:"none",borderRadius:10,padding:"12px",fontSize:14,fontWeight:700,cursor:"pointer",marginTop:14,letterSpacing:-0.2},
+  deleteBtn2:{background:"transparent",border:"1px solid #2a1a1a",color:"#664",borderRadius:8,padding:"5px 10px",fontSize:12,cursor:"pointer"},
+  detailBanner:{borderRadius:10,padding:"14px",marginBottom:10,marginTop:10},
+  catBadge:{fontSize:11,padding:"2px 8px",borderRadius:8,fontWeight:600},
+  detailName:{fontSize:20,fontWeight:800,margin:"5px 0 2px",letterSpacing:-0.5,color:"#f0f0f8"},
+  detailSection:{background:"#0c0c14",borderRadius:10,padding:"12px 14px",marginBottom:8,border:"1px solid #18182a"},
+  detailRow:{display:"flex",gap:8,marginBottom:5,alignItems:"flex-start"},
+  di:{fontSize:13,flexShrink:0,paddingTop:1},
+  dv:{fontSize:13,color:"#7070a0",lineHeight:1.5},
+  addrLink:{fontSize:13,color:"#60a0e0",lineHeight:1.5,textDecoration:"none"},
+  detailNavSection:{background:"#0c0c14",borderRadius:10,padding:"14px",border:"1px solid #18182a",marginBottom:8},
+  tag:{background:"#14142a",color:"#446",fontSize:10,padding:"2px 7px",borderRadius:6,border:"1px solid #1c1c30"},
+  toggleBtn:{background:"transparent",border:"1px solid",borderRadius:8,padding:"7px 14px",fontSize:12,cursor:"pointer",fontWeight:600},
+  editBtn:{background:"transparent",border:"1px solid #1c1c2e",color:"#446",borderRadius:6,padding:"3px 9px",fontSize:11,cursor:"pointer"},
+  settingRow:{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #141428",gap:6,flexWrap:"wrap"},
+  swatch:{width:16,height:16,borderRadius:4,border:"none",cursor:"pointer",padding:0,flexShrink:0},
+  delCatBtn:{background:"transparent",border:"1px solid #201818",color:"#443",borderRadius:6,padding:"3px 7px",fontSize:11,cursor:"pointer"},
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
