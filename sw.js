@@ -1,4 +1,4 @@
-const CACHE='wf-v3';
+const CACHE='wf-v4';
 const ASSETS=['./'];
 self.addEventListener('install',e=>{
   e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting()));
