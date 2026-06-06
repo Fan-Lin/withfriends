@@ -35,7 +35,21 @@ const MODES=[{id:"driving",label:"开车",icon:"🚗"},{id:"transit",label:"公�
 const BAIDU_M={driving:"driving",transit:"transit",walking:"walking",bicycling:"riding"};
 const AMAP_M={driving:"car",transit:"bus",walking:"walk",bicycling:"ride"};
 const SPLIT=/[,，;；\s]+/;
-const VER="2.2";
+const VER="2.3";
+
+/* ── Storage migration ─────────────────────────────── */
+// Runs once at startup: migrate any old keys → stable permanent keys
+(function migrate(){
+  const stable={r:"wf_r",c:"wf_c",l:"wf_l"};
+  const oldKeys={r:["wf5_r","wf4_r","wf_restaurants_v2","wf_r_v3"],c:["wf5_c","wf4_c","wf_categories_v1","wf_c_v1"],l:["wf5_l"]};
+  for(const[type,sk] of Object.entries(stable)){
+    if(localStorage.getItem(sk))continue;
+    for(const ok of oldKeys[type]){
+      const v=localStorage.getItem(ok);
+      if(v){localStorage.setItem(sk,v);localStorage.removeItem(ok);break;}
+    }
+  }
+})();
 
 /* ── Nav ───────────────────────────────────────────── */
 function tryOpen(appUrl,webUrl){
@@ -179,11 +193,12 @@ function Stars({value=0,onChange,size=17,readonly=false}){
 }
 
 /* ── SwipeCard ─────────────────────────────────────── */
-function SwipeCard({onDelete,children}){
+function SwipeCard({onDelete,children,disabled=false}){
   const[ox,setOx]=useState(0);const[sw,setSw]=useState(false);
   const sx=useRef(0),sy=useRef(0),hz=useRef(false);const T=80;
-  const onTS=e=>{sx.current=e.touches[0].clientX;sy.current=e.touches[0].clientY;hz.current=false;setSw(false)};
+  const onTS=e=>{if(disabled)return;sx.current=e.touches[0].clientX;sy.current=e.touches[0].clientY;hz.current=false;setSw(false)};
   const onTM=e=>{
+    if(disabled)return;
     const dx=e.touches[0].clientX-sx.current,dy=e.touches[0].clientY-sy.current;
     if(!hz.current&&Math.abs(dy)>Math.abs(dx))return;
     if(!hz.current&&sx.current<40)return;
@@ -191,13 +206,13 @@ function SwipeCard({onDelete,children}){
     if(!hz.current)return;
     e.preventDefault();setOx(Math.min(0,dx));setSw(true);
   };
-  const onTE=()=>{setOx(ox<-T?-T:0);setSw(false)};
+  const onTE=()=>{if(disabled)return;setOx(ox<-T?-T:0);setSw(false)};
   return(<div style={{position:"relative",overflow:"hidden",borderRadius:12,marginBottom:2}}>
-    <div style={{position:"absolute",right:0,top:0,bottom:0,width:80,background:"#d13b2a",display:"flex",alignItems:"center",justifyContent:"center",borderRadius:"0 12px 12px 0"}}>
+    {!disabled&&<div style={{position:"absolute",right:0,top:0,bottom:0,width:80,background:"#d13b2a",display:"flex",alignItems:"center",justifyContent:"center",borderRadius:"0 12px 12px 0"}}>
       <button style={{background:"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}
         onClick={()=>{if(confirm("删除这家？"))onDelete()}}><span style={{fontSize:16}}>🗑️</span><span>删除</span></button>
-    </div>
-    <div style={{transform:`translateX(${ox}px)`,transition:sw?"none":"transform 0.25s cubic-bezier(.4,0,.2,1)",position:"relative",zIndex:1}}
+    </div>}
+    <div style={{transform:`translateX(${disabled?0:ox}px)`,transition:sw?"none":"transform 0.25s cubic-bezier(.4,0,.2,1)",position:"relative",zIndex:1}}
       onTouchStart={onTS} onTouchMove={onTM} onTouchEnd={onTE}
       onClick={ox<=-T?()=>setOx(0):undefined}>{children}</div>
   </div>);
@@ -260,9 +275,9 @@ function VisitForm({onSave,onCancel}){
 
 /* ── App ───────────────────────────────────────────── */
 function App(){
-  const[rs,setRs]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf5_r"))||[]}catch{return[]}});
-  const[cats,setCats]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf5_c"))||DEF_CATS}catch{return DEF_CATS}});
-  const[metroLines,setMetroLines]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf5_l"))||[]}catch{return[]}});
+  const[rs,setRs]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf_r"))||[]}catch{return[]}});
+  const[cats,setCats]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf_c"))||DEF_CATS}catch{return DEF_CATS}});
+  const[metroLines,setMetroLines]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf_l"))||[]}catch{return[]}});
   const[tab,setTab]=useState(0);
   const[view,setView]=useState(null);
   const[sel,setSel]=useState(null);
@@ -275,11 +290,25 @@ function App(){
   const[groupBy,setGroupBy]=useState("none");
   const[collapsed,setCollapsed]=useState({});
   const[form,setForm]=useState({name:"",address:"",area:"",foundAt:"",category:"",lines:[],note:"",tags:""});
+  const[selecting,setSelecting]=useState(false);
+  const[selectedIds,setSelectedIds]=useState(new Set());
+
+  function toggleSelect(id){
+    setSelectedIds(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
+  }
+  function selectAll(ids){setSelectedIds(new Set(ids));}
+  function exitSelect(){setSelecting(false);setSelectedIds(new Set());}
+  function deleteSelected(){
+    if(!selectedIds.size)return;
+    if(!confirm(`删除选中的 ${selectedIds.size} 家？`))return;
+    setRs(p=>p.filter(r=>!selectedIds.has(r.id)));
+    exitSelect();
+  }
 
   useEffect(()=>{if(!form.category&&cats.length)setForm(f=>({...f,category:cats[0].name}))},[cats]);
-  useEffect(()=>{try{localStorage.setItem("wf5_r",JSON.stringify(rs))}catch{}},[rs]);
-  useEffect(()=>{try{localStorage.setItem("wf5_c",JSON.stringify(cats))}catch{}},[cats]);
-  useEffect(()=>{try{localStorage.setItem("wf5_l",JSON.stringify(metroLines))}catch{}},[metroLines]);
+  useEffect(()=>{try{localStorage.setItem("wf_r",JSON.stringify(rs))}catch{}},[rs]);
+  useEffect(()=>{try{localStorage.setItem("wf_c",JSON.stringify(cats))}catch{}},[cats]);
+  useEffect(()=>{try{localStorage.setItem("wf_l",JSON.stringify(metroLines))}catch{}},[metroLines]);
   // Reset filters on tab change
   useEffect(()=>{setFCat("全部");setFLine("全部");setCollapsed({});},[tab]);
   // Sync sel with rs — fix stale detail view, handle deletion
@@ -391,7 +420,11 @@ function App(){
         groups={groups} collapsed={effectiveCollapsed} setCollapsed={setCollapsed}
         openDetail={r=>{setSel(r);setView("detail");}}
         upd={upd} del={delR} setNavSheet={setNavSheet}
-        onToggleStatus={toggleStatus}/>
+        onToggleStatus={toggleStatus}
+        selecting={selecting} setSelecting={setSelecting}
+        selectedIds={selectedIds} toggleSelect={toggleSelect}
+        selectAll={selectAll} exitSelect={exitSelect} deleteSelected={deleteSelected}
+        allFilteredIds={sorted.map(r=>r.id)}/>
     )}
     {view===null&&tab===3&&(
       <SettingsView cats={cats} setCats={setCats} metroLines={metroLines} setMetroLines={setMetroLines}
@@ -416,12 +449,33 @@ function App(){
 }
 
 /* ── ListView ──────────────────────────────────────── */
-function ListView({tab,search,setSearch,fCat,setFCat,fLine,setFLine,metroLines,cats,sortBy,setSortBy,groupBy,setGroupBy,groups,collapsed,setCollapsed,openDetail,upd,del,setNavSheet,onToggleStatus}){
+function ListView({tab,search,setSearch,fCat,setFCat,fLine,setFLine,metroLines,cats,sortBy,setSortBy,groupBy,setGroupBy,groups,collapsed,setCollapsed,openDetail,upd,del,setNavSheet,onToggleStatus,selecting,setSelecting,selectedIds,toggleSelect,selectAll,exitSelect,deleteSelected,allFilteredIds}){
   const groupOpts=tab===2
     ?[["none","—"],["category","菜系"],["area","区域"]]
     :[["none","—"],["category","菜系"],["status","状态"],["area","区域"]];
   return(<main style={S.main}>
-    <input style={S.searchInput} placeholder="搜餐厅、地址、菜品、区域…" value={search} onChange={e=>setSearch(e.target.value)}/>
+    {/* Search + multi-select toggle */}
+    <div style={{display:"flex",gap:8,marginBottom:12}}>
+      <input style={{...S.searchInput,marginBottom:0,flex:1}} placeholder="搜餐厅、地址、菜品、区域…" value={search} onChange={e=>setSearch(e.target.value)}/>
+      <button style={{...S.smallBtn,flexShrink:0,padding:"8px 12px",...(selecting?{background:"#1e1e30",color:"#a0a0c0",borderColor:"#2a2a44"}:{})}}
+        onClick={()=>{if(selecting)exitSelect();else setSelecting(true);}}>
+        {selecting?"取消":"多选"}
+      </button>
+    </div>
+    {selecting&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,padding:"8px 12px",background:"#14142a",borderRadius:8,border:"1px solid #1e1e30"}}>
+      <span style={{fontSize:12,color:"#a0a0c0"}}>已选 {selectedIds.size} 家</span>
+      <div style={{display:"flex",gap:8}}>
+        <button style={{...S.chip,color:"#668"}} onClick={()=>{
+          const allSel=allFilteredIds.length>0&&allFilteredIds.every(id=>selectedIds.has(id));
+          allSel?exitSelect():selectAll(allFilteredIds);
+          if(allSel)setSelecting(true);
+        }}>{allFilteredIds.every(id=>selectedIds.has(id))&&allFilteredIds.length>0?"取消全选":"全选"}</button>
+        <button style={{...S.chip,color:"#f87171",borderColor:"#f8717144",background:selectedIds.size?"#f8717118":"transparent"}}
+          disabled={!selectedIds.size} onClick={deleteSelected}>
+          删除 {selectedIds.size>0?`(${selectedIds.size})`:""}
+        </button>
+      </div>
+    </div>}
     <div style={S.filterRow}>
       {["全部",...cats.map(c=>c.name)].map(c=>{
         const col=c!=="全部"?catColor(cats,c):null;
@@ -471,9 +525,10 @@ function ListView({tab,search,setSearch,fCat,setFCat,fLine,setFLine,metroLines,c
                 transform:collapsed[key]?"rotate(-90deg)":"rotate(0)",transition:"transform 0.2s"}}>▾</span>
             </button>}
             {!collapsed[key]&&items.map(r=>(
-              <SwipeCard key={r.id} onDelete={()=>del(r.id)}>
-                <Card r={r} cats={cats} onOpen={()=>openDetail(r)} onNav={()=>setNavSheet(r)}
-                  onToggle={()=>onToggleStatus(r.id,r.status)}/>
+              <SwipeCard key={r.id} onDelete={()=>del(r.id)} disabled={selecting}>
+                <Card r={r} cats={cats} onOpen={()=>selecting?toggleSelect(r.id):openDetail(r)} onNav={()=>setNavSheet(r)}
+                  onToggle={()=>onToggleStatus(r.id,r.status)}
+                  selecting={selecting} selected={selectedIds.has(r.id)} onSelect={()=>toggleSelect(r.id)}/>
               </SwipeCard>
             ))}
           </div>
@@ -484,13 +539,20 @@ function ListView({tab,search,setSearch,fCat,setFCat,fLine,setFLine,metroLines,c
 }
 
 /* ── Card ──────────────────────────────────────────── */
-function Card({r,cats,onOpen,onNav,onToggle}){
+function Card({r,cats,onOpen,onNav,onToggle,selecting=false,selected=false,onSelect}){
   const been=r.status==="已去";const ar=avgRating(r);const warn=been&&ar>0&&ar<=2;
   const accent=warn?"#f87171":been?"#6ee7b7":catColor(cats,r.category);
   const vc=(r.visits||[]).length;const lv=lastVisit(r);
-  return(<div style={{...S.card,borderLeft:`3px solid ${accent}44`}}>
+  return(<div style={{...S.card,borderLeft:`3px solid ${selecting&&selected?"#fff":accent+"44"}`,
+    outline:selecting&&selected?"2px solid #ffffff30":"none"}}>
     <div style={S.cardBody} onClick={onOpen}>
       <div style={S.cardRow}>
+        {selecting&&<button onClick={e=>{e.stopPropagation();onSelect();}}
+          style={{background:"none",border:`2px solid ${selected?"#fff":"#334"}`,borderRadius:4,
+            width:18,height:18,marginRight:8,flexShrink:0,cursor:"pointer",
+            background:selected?"#fff":"transparent",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          {selected&&<span style={{fontSize:11,color:"#0c0c14",fontWeight:900}}>✓</span>}
+        </button>}
         <span style={S.cardName}>{r.name}</span>
         <span style={{...S.badge,background:warn?"#f8717118":been?"#6ee7b718":"#ffffff08",
           color:warn?"#f87171":been?"#6ee7b7":"#556"}}>
@@ -506,12 +568,12 @@ function Card({r,cats,onOpen,onNav,onToggle}){
         {lv&&<span style={{color:"#334",marginLeft:6,fontSize:10}}>最近 {lv}</span>}
       </div>}
     </div>
-    <div style={S.cardActs}>
+    {!selecting&&<div style={S.cardActs}>
       <button style={{...S.actBtn,color:been?"#6ee7b7":"#f0b429",borderColor:been?"#6ee7b722":"#f0b42922"}}
         onClick={e=>{e.stopPropagation();onToggle()}}>{been?"↩ 想去":"✓ 去了"}</button>
       <div style={{flex:1}}/>
       <button style={S.navBtn} onClick={e=>{e.stopPropagation();onNav()}}>导航 →</button>
-    </div>
+    </div>}
   </div>);
 }
 
