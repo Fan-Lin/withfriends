@@ -20,6 +20,8 @@ input,textarea,button{font-family:inherit}
 input::placeholder,textarea::placeholder{color:#1e1e2e}
 input:focus,textarea:focus{border-color:#2a2a44!important;outline:none}
 ::-webkit-scrollbar{width:0}
+.hscroll{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px;-webkit-overflow-scrolling:touch}
+.hscroll::-webkit-scrollbar{display:none}
 .press:active{transform:scale(0.97)}
 </style>
 <script>if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));</script>
@@ -27,7 +29,7 @@ input:focus,textarea:focus{border-color:#2a2a44!important;outline:none}
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const{useState,useEffect,useRef}=React;
+const{useState,useEffect,useRef,useCallback}=React;
 
 const DEF_CATS=[{name:"川菜",color:"#e85d26"},{name:"粤菜",color:"#c8973a"},{name:"日料",color:"#5f8fcc"},{name:"烤肉",color:"#b5451b"},{name:"火锅",color:"#d13b2a"},{name:"面食",color:"#c8843a"},{name:"其他",color:"#7a7a8a"}];
 const COLORS=["#e85d26","#c8973a","#5f8fcc","#b5451b","#d13b2a","#c8843a","#7a7a8a","#4a9e6e","#8a5ccc","#cc5c8a","#6ab0a0","#a0886a","#5588aa","#9a7040"];
@@ -35,26 +37,46 @@ const MODES=[{id:"driving",label:"开车",icon:"🚗"},{id:"transit",label:"公�
 const BAIDU_M={driving:"driving",transit:"transit",walking:"walking",bicycling:"riding"};
 const AMAP_M={driving:"car",transit:"bus",walking:"walk",bicycling:"ride"};
 const SPLIT=/[,，;；\s]+/;
-const VER="2.3";
+const VER="2.4";
 
-/* ── Storage migration ─────────────────────────────── */
-// Runs once at startup: migrate any old keys → stable permanent keys
+/* ── Achievements ──────────────────────────────────── */
+const ACH=[
+  {id:"c1",icon:"📌",name:"开始探索",desc:"收藏第一家",prog:rs=>({c:Math.min(rs.length,1),t:1})},
+  {id:"c10",icon:"🗂️",name:"小食家",desc:"收藏10家",prog:rs=>({c:Math.min(rs.length,10),t:10})},
+  {id:"c50",icon:"📚",name:"美食图书馆",desc:"收藏50家",prog:rs=>({c:Math.min(rs.length,50),t:50})},
+  {id:"v1",icon:"🍜",name:"初来乍到",desc:"第一次打卡",prog:rs=>({c:Math.min(rs.reduce((s,r)=>s+(r.visits||[]).length,0),1),t:1})},
+  {id:"v3",icon:"🔥",name:"熟客",desc:"同一家去过3次",prog:rs=>({c:Math.min(Math.max(0,...rs.map(r=>(r.visits||[]).length)),3),t:3})},
+  {id:"v5",icon:"👑",name:"常客",desc:"同一家去过5次",prog:rs=>({c:Math.min(Math.max(0,...rs.map(r=>(r.visits||[]).length)),5),t:5})},
+  {id:"s5",icon:"⭐",name:"挑剔的舌头",desc:"给出第一个5星",prog:rs=>({c:Math.min(rs.flatMap(r=>r.visits||[]).flatMap(v=>v.dishes||[]).filter(d=>d.rating===5).length,1),t:1})},
+  {id:"w3",icon:"⚠️",name:"避雷侦探",desc:"记录3家避雷",prog:rs=>({c:Math.min(rs.filter(r=>r.status==="已去"&&avgRating(r)>0&&avgRating(r)<=2).length,3),t:3})},
+  {id:"h10",icon:"💯",name:"品味家",desc:"10家均分超4星",prog:rs=>({c:Math.min(rs.filter(r=>avgRating(r)>=4).length,10),t:10})},
+  {id:"m3",icon:"🚇",name:"地铁美食家",desc:"覆盖3条线路",prog:rs=>({c:Math.min(new Set(rs.flatMap(r=>r.lines||[])).size,3),t:3})},
+  {id:"a5",icon:"🗺️",name:"街区猎人",desc:"覆盖5个区域",prog:rs=>({c:Math.min(new Set(rs.map(r=>r.area).filter(Boolean)).size,5),t:5})},
+  {id:"sp5",icon:"🌶️",name:"无辣不欢",desc:"川菜/火锅打卡5次",prog:rs=>({c:Math.min(rs.filter(r=>["川菜","火锅"].includes(r.category)).flatMap(r=>r.visits||[]).length,5),t:5})},
+  {id:"jp3",icon:"🍱",name:"东瀛探索者",desc:"日料打卡3次",prog:rs=>({c:Math.min(rs.filter(r=>r.category==="日料").flatMap(r=>r.visits||[]).length,3),t:3})},
+  {id:"mt3",icon:"🥩",name:"肉食主义",desc:"烤肉打卡3次",prog:rs=>({c:Math.min(rs.filter(r=>r.category==="烤肉").flatMap(r=>r.visits||[]).length,3),t:3})},
+  {id:"d10",icon:"🔍",name:"发现者",desc:"10家填了发现于",prog:rs=>({c:Math.min(rs.filter(r=>r.foundAt).length,10),t:10})},
+  {id:"n10",icon:"📝",name:"美食作家",desc:"10家写了备注",prog:rs=>({c:Math.min(rs.filter(r=>r.note).length,10),t:10})},
+  {id:"share",icon:"📤",name:"推荐官",desc:"第一次分享",hidden:true,prog:(rs,f)=>({c:f.shared?1:0,t:1})},
+  {id:"dice",icon:"🎲",name:"今天吃什么",desc:"第一次用骰子",hidden:true,prog:(rs,f)=>({c:f.diced?1:0,t:1})},
+  {id:"night",icon:"🌙",name:"夜猫子",desc:"深夜11点后打卡",hidden:true,prog:rs=>({c:rs.some(r=>(r.visits||[]).some(v=>{if(!v.ts)return false;const h=new Date(v.ts).getHours();return h>=23||h<4;}))?1:0,t:1})},
+  {id:"come",icon:"👻",name:"打脸时刻",desc:"把已去改回想去",hidden:true,prog:(rs,f)=>({c:f.comeback?1:0,t:1})},
+  {id:"ret",icon:"🔄",name:"回头客",desc:"避雷店后来又好评",hidden:true,prog:rs=>({c:rs.some(r=>{const vs=(r.visits||[]).map(v=>{const ds=(v.dishes||[]).filter(d=>d.rating>0);return ds.length?ds.reduce((a,b)=>a+b.rating,0)/ds.length:0}).filter(x=>x>0);return vs.some(x=>x<=2)&&vs.some(x=>x>=4)})?1:0,t:1})},
+];
+
+/* ── Migration ─────────────────────────────────────── */
 (function migrate(){
   const stable={r:"wf_r",c:"wf_c",l:"wf_l"};
-  const oldKeys={r:["wf5_r","wf4_r","wf_restaurants_v2","wf_r_v3"],c:["wf5_c","wf4_c","wf_categories_v1","wf_c_v1"],l:["wf5_l"]};
-  for(const[type,sk] of Object.entries(stable)){
+  const old={r:["wf5_r","wf4_r","wf_restaurants_v2","wf_r_v3"],c:["wf5_c","wf4_c","wf_categories_v1","wf_c_v1"],l:["wf5_l"]};
+  for(const[k,sk] of Object.entries(stable)){
     if(localStorage.getItem(sk))continue;
-    for(const ok of oldKeys[type]){
-      const v=localStorage.getItem(ok);
-      if(v){localStorage.setItem(sk,v);localStorage.removeItem(ok);break;}
-    }
+    for(const ok of old[k]||[]){const v=localStorage.getItem(ok);if(v){localStorage.setItem(sk,v);localStorage.removeItem(ok);break;}}
   }
 })();
 
 /* ── Nav ───────────────────────────────────────────── */
 function tryOpen(appUrl,webUrl){
-  let opened=false;
-  const h=()=>{opened=true};
+  let opened=false;const h=()=>{opened=true};
   window.addEventListener('blur',h,{once:true});
   window.location.href=appUrl;
   setTimeout(()=>{window.removeEventListener('blur',h);if(!opened)window.open(webUrl,'_blank')},1500);
@@ -63,99 +85,57 @@ function openBaidu(r,mode){
   const d=encodeURIComponent(r.name+" "+r.address);
   const o=r.foundAt?`&origin=name:${encodeURIComponent(r.foundAt)}`:"";
   tryOpen(`baidumap://map/direction?destination=name:${d}&mode=${BAIDU_M[mode]||"driving"}&src=wf${o}`,
-    `https://api.map.baidu.com/direction?origin=${r.foundAt?encodeURIComponent(r.foundAt):encodeURIComponent("我的位置")}&destination=${d}&mode=${BAIDU_M[mode]||"driving"}&output=html&src=webapp.withfriends`);
+    `https://api.map.baidu.com/direction?origin=${r.foundAt?encodeURIComponent(r.foundAt):encodeURIComponent("我的位置")}&destination=${d}&mode=${BAIDU_M[mode]||"driving"}&output=html&src=wf`);
 }
 function openAmap(r,mode){
   const d=encodeURIComponent(r.name+" "+r.address);
-  tryOpen(`androidamap://navi?sourceApplication=withfriends&dname=${encodeURIComponent(r.name)}&dev=0`,
+  tryOpen(`androidamap://navi?sourceApplication=wf&dname=${encodeURIComponent(r.name)}&dev=0`,
     `https://uri.amap.com/navigation?to=,,${d}&mode=${AMAP_M[mode]||"car"}&callnative=1&src=wf`);
 }
 
 /* ── Share card ────────────────────────────────────── */
 function generateCard(r,cats){
-  const W=800,H=420;
-  const canvas=document.createElement('canvas');
-  canvas.width=W;canvas.height=H;
-  const ctx=canvas.getContext('2d');
-  const color=catColor(cats,r.category);
-  const ar=avgRating(r);
-
-  // bg
+  const W=800,H=420,canvas=document.createElement('canvas');
+  canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
+  const color=catColor(cats,r.category);const ar=avgRating(r);
   ctx.fillStyle='#0c0c14';ctx.fillRect(0,0,W,H);
-  const g=ctx.createLinearGradient(0,0,W*0.7,H);
-  g.addColorStop(0,color+'28');g.addColorStop(1,'#0c0c1400');
-  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
-  // left bar
-  ctx.fillStyle=color;ctx.fillRect(0,0,5,H);
-
+  const g=ctx.createLinearGradient(0,0,W*.7,H);g.addColorStop(0,color+'28');g.addColorStop(1,'#0c0c1400');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);ctx.fillStyle=color;ctx.fillRect(0,0,5,H);
   ctx.textBaseline='middle';
-
-  // name
   ctx.fillStyle='#f0f0f8';ctx.font='bold 46px sans-serif';
-  const nm=r.name.length>15?r.name.slice(0,15)+'…':r.name;
-  ctx.fillText(nm,48,90);
-
-  // category + lines
+  ctx.fillText(r.name.length>15?r.name.slice(0,15)+'…':r.name,48,90);
   ctx.fillStyle=color;ctx.font='22px sans-serif';
-  const sub=[(r.category||''),(r.lines||[]).map(l=>'🚇'+l).join(' ')].filter(Boolean).join('  ·  ');
-  ctx.fillText(sub,48,140);
-
-  // rating
-  if(ar>0){
-    ctx.fillStyle='#f0b429';ctx.font='26px sans-serif';
-    ctx.fillText('★'.repeat(Math.round(ar))+'☆'.repeat(5-Math.round(ar)),48,185);
-  }
-
-  // address
+  ctx.fillText([(r.category||''),(r.lines||[]).map(l=>'🚇'+l).join(' ')].filter(Boolean).join('  ·  '),48,140);
+  if(ar>0){ctx.fillStyle='#f0b429';ctx.font='26px sans-serif';ctx.fillText('★'.repeat(Math.round(ar))+'☆'.repeat(5-Math.round(ar)),48,185);}
   ctx.fillStyle='#556070';ctx.font='20px sans-serif';
   const addr=(r.address||'').length>32?r.address.slice(0,32)+'…':r.address;
-  ctx.fillText('📍 '+(r.area?`${r.area}  `:'')+(addr||''),48,230);
-
-  // top dishes
-  const dishes=(r.visits||[]).flatMap(v=>(v.dishes||[])).filter(d=>d.rating>=4).slice(0,4).map(d=>d.name).join('  ·  ');
-  if(dishes){
-    ctx.fillStyle='#8888a8';ctx.font='19px sans-serif';
-    const ds=dishes.length>36?dishes.slice(0,36)+'…':dishes;
-    ctx.fillText('推荐  '+ds,48,276);
-  }
-
-  // visits
+  ctx.fillText('📍 '+(r.area?r.area+'  ':'')+addr,48,230);
+  const dishes=(r.visits||[]).flatMap(v=>v.dishes||[]).filter(d=>d.rating>=4).slice(0,4).map(d=>d.name).join('  ·  ');
+  if(dishes){ctx.fillStyle='#8888a8';ctx.font='19px sans-serif';ctx.fillText('推荐  '+(dishes.length>36?dishes.slice(0,36)+'…':dishes),48,276);}
   const vc=(r.visits||[]).length;
   if(vc>0){ctx.fillStyle='#ffffff18';ctx.font='18px sans-serif';ctx.textAlign='right';ctx.fillText(`去过 ${vc} 次`,W-48,H-36);ctx.textAlign='left';}
-
-  // brand
-  ctx.fillStyle='#ffffff18';ctx.font='600 18px sans-serif';ctx.textAlign='right';
-  ctx.fillText('withfriends',W-48,42);ctx.textAlign='left';
-
+  ctx.fillStyle='#ffffff18';ctx.font='600 18px sans-serif';ctx.textAlign='right';ctx.fillText('withfriends',W-48,42);ctx.textAlign='left';
   return canvas.toDataURL('image/png');
 }
-
-async function doShare(r,cats){
+async function doShare(r,cats,onShared){
   const dataUrl=generateCard(r,cats);
   try{
-    const blob=await(await fetch(dataUrl)).blob();
-    const file=new File([blob],`${r.name}.png`,{type:'image/png'});
-    if(navigator.share&&navigator.canShare?.({files:[file]})){
-      await navigator.share({title:r.name,files:[file]});return;
-    }
+    const blob=await(await fetch(dataUrl)).blob();const file=new File([blob],`${r.name}.png`,{type:'image/png'});
+    if(navigator.share&&navigator.canShare?.({files:[file]})){await navigator.share({title:r.name,files:[file]});onShared?.();return;}
   }catch(e){}
-  // fallback: show image overlay to save/share
-  const overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:#000c;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px';
-  const img=document.createElement('img');
-  img.src=dataUrl;img.style.cssText='max-width:92vw;border-radius:12px';
-  const hint=document.createElement('div');
-  hint.style.cssText='color:#aaa;font-size:13px';hint.textContent='长按图片保存 · 点击背景关闭';
-  overlay.appendChild(img);overlay.appendChild(hint);
-  overlay.onclick=e=>{if(e.target===overlay)document.body.removeChild(overlay)};
-  document.body.appendChild(overlay);
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:#000c;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px';
+  const img=document.createElement('img');img.src=dataUrl;img.style.cssText='max-width:92vw;border-radius:12px';
+  const hint=document.createElement('div');hint.style.cssText='color:#aaa;font-size:13px';hint.textContent='长按图片保存 · 点击背景关闭';
+  ov.appendChild(img);ov.appendChild(hint);ov.onclick=e=>{if(e.target===ov)document.body.removeChild(ov)};
+  document.body.appendChild(ov);onShared?.();
 }
 
 /* ── Helpers ───────────────────────────────────────── */
 function catColor(cats,n){return(cats.find(c=>c.name===n)||{}).color||"#7a7a8a"}
 function avgRating(r){const all=(r.visits||[]).flatMap(v=>(v.dishes||[]).map(d=>d.rating).filter(x=>x>0));return all.length?all.reduce((a,b)=>a+b,0)/all.length:0}
 function lastVisit(r){const v=r.visits||[];return v.length?v[v.length-1].date:null}
-function allText(r){return[r.name,r.address,r.area||"",r.foundAt||"",(r.tags||[]).join(" "),r.lines?.join(" ")||"",(r.visits||[]).flatMap(v=>(v.dishes||[]).map(d=>d.name)).join(" ")].join(" ")}
+function allText(r){return[r.name,r.address,r.area||"",r.foundAt||"",(r.tags||[]).join(" "),(r.lines||[]).join(" "),(r.visits||[]).flatMap(v=>(v.dishes||[]).map(d=>d.name)).join(" ")].join(" ")}
 function matchSearch(r,q){return!q||allText(r).includes(q)}
 function sortList(list,by){
   const c=[...list];
@@ -163,6 +143,21 @@ function sortList(list,by){
   else if(by==="recent")c.sort((a,b)=>(lastVisit(b)||"").localeCompare(lastVisit(a)||""));
   else c.sort((a,b)=>b.id-a.id);
   return c;
+}
+function weightedRandom(list){
+  const now=Date.now();
+  const w=list.map(r=>{
+    const ar=avgRating(r)||3;
+    const lv=lastVisit(r);
+    const days=lv?(now-new Date(lv.replace(/\//g,'-')))/(864e5):999;
+    return ar*(1+Math.min(days/30,3));
+  });
+  const tot=w.reduce((a,b)=>a+b,0);let rand=Math.random()*tot;
+  for(let i=0;i<list.length;i++){rand-=w[i];if(rand<=0)return list[i];}
+  return list[list.length-1];
+}
+function checkAch(rs,flags,unlocked){
+  return ACH.filter(a=>!unlocked.includes(a.id)&&a.prog(rs,flags).c>=a.prog(rs,flags).t);
 }
 
 /* ── Logo ──────────────────────────────────────────── */
@@ -190,6 +185,45 @@ function Stars({value=0,onChange,size=17,readonly=false}){
         onClick={()=>!readonly&&onChange?.(value===n?0:n)}>★</button>
     ))}
   </div>);
+}
+
+/* ── Toast ─────────────────────────────────────────── */
+function Toast({ach,onDismiss}){
+  useEffect(()=>{if(!ach)return;const t=setTimeout(onDismiss,4000);return()=>clearTimeout(t)},[ach]);
+  if(!ach)return null;
+  return(<div style={{position:"fixed",bottom:80,left:16,right:16,zIndex:400,background:"#1a1a2e",
+    border:"1px solid #2a2a44",borderRadius:12,padding:"12px 16px",display:"flex",alignItems:"center",
+    gap:12,boxShadow:"0 4px 20px #000a",animation:"tin 0.3s ease-out"}}>
+    <style>{`@keyframes tin{from{transform:translateY(16px);opacity:0}to{transform:translateY(0);opacity:1}}`}</style>
+    <span style={{fontSize:28}}>{ach.icon}</span>
+    <div style={{flex:1}}>
+      <div style={{fontSize:11,color:"#f0b429",fontWeight:700,letterSpacing:0.5}}>成就解锁！</div>
+      <div style={{fontSize:14,color:"#f0f0f8",fontWeight:700}}>{ach.name}</div>
+      <div style={{fontSize:11,color:"#556"}}>{ach.desc}</div>
+    </div>
+    <button onClick={onDismiss} style={{background:"none",border:"none",color:"#446",cursor:"pointer",fontSize:16}}>✕</button>
+  </div>);
+}
+
+/* ── CollapseWrapper (auto-collapse past cards) ────── */
+function CollapseWrapper({r,cats,children}){
+  const ref=useRef(null);
+  const[compact,setCompact]=useState(false);
+  useEffect(()=>{
+    const el=ref.current;if(!el)return;
+    const obs=new IntersectionObserver(([e])=>{
+      setCompact(!e.isIntersecting&&e.boundingClientRect.top<0);
+    },{threshold:0});
+    obs.observe(el);return()=>obs.disconnect();
+  },[]);
+  const color=catColor(cats,r.category);const been=r.status==="已去";
+  if(compact)return(
+    <div ref={ref} style={{height:36,background:"#10101a",borderRadius:10,marginBottom:2,
+      borderLeft:`3px solid ${color}33`,display:"flex",alignItems:"center",padding:"0 14px",overflow:"hidden"}}>
+      <span style={{fontSize:13,color:"#7070a0",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</span>
+      <span style={{fontSize:10,color:been?"#6ee7b7":"#446",flexShrink:0}}>{been?"✓":"想去"}</span>
+    </div>);
+  return <div ref={ref}>{children}</div>;
 }
 
 /* ── SwipeCard ─────────────────────────────────────── */
@@ -223,7 +257,8 @@ function BottomSheet({open,onClose,title,children}){
   if(!open)return null;
   return(<>
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"#000a",zIndex:300}}/>
-    <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#11111b",borderRadius:"16px 16px 0 0",padding:"20px 18px 34px",zIndex:301,maxHeight:"75vh",overflowY:"auto",animation:"su 0.22s ease-out"}}>
+    <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#11111b",borderRadius:"16px 16px 0 0",
+      padding:"20px 18px 34px",zIndex:301,maxHeight:"80vh",overflowY:"auto",animation:"su 0.22s ease-out"}}>
       <style>{`@keyframes su{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>
       <div style={{width:36,height:4,borderRadius:2,background:"#2a2a44",margin:"0 auto 14px"}}/>
       {title&&<div style={{fontSize:14,fontWeight:700,color:"#f0f0f8",marginBottom:14}}>{title}</div>}
@@ -247,29 +282,93 @@ function NavSheet({r,mode,setMode,onClose}){
 }
 
 /* ── VisitForm ─────────────────────────────────────── */
-function VisitForm({onSave,onCancel}){
-  const[dishes,setDishes]=useState([{name:"",rating:0}]);
-  const[note,setNote]=useState("");
+function VisitForm({initial=null,onSave,onCancel}){
+  const[dishes,setDishes]=useState(initial?.dishes?.length?[...initial.dishes]:[{name:"",rating:0}]);
+  const[note,setNote]=useState(initial?.note||"");
   function save(){
-    const v={id:Date.now(),date:new Date().toLocaleDateString("zh-CN"),dishes:dishes.filter(d=>d.name.trim()),note};
-    onSave(v);
+    onSave({id:initial?.id||Date.now(),ts:initial?.ts||Date.now(),date:initial?.date||new Date().toLocaleDateString("zh-CN"),dishes:dishes.filter(d=>d.name.trim()),note});
   }
-  return(<div style={{background:"#0c0c14",borderRadius:8,padding:"12px",border:"1px solid #1e1e30",marginBottom:10}}>
-    <div style={{...S.microLabel,marginBottom:8}}>这次吃了什么？</div>
+  return(<div style={{background:"#0c0c14",borderRadius:8,padding:12,border:"1px solid #1e1e30",marginBottom:10}}>
+    <div style={{...S.microLabel,marginBottom:8}}>{initial?"编辑打卡":"这次吃了什么？"}</div>
     {dishes.map((d,i)=>(
       <div key={i} style={{display:"flex",gap:6,alignItems:"center",marginBottom:8}}>
         <input style={{...S.input,flex:1,padding:"7px 10px",fontSize:13}} placeholder="菜名"
           value={d.name} onChange={e=>{const c=[...dishes];c[i]={...c[i],name:e.target.value};setDishes(c)}}/>
         <Stars value={d.rating} onChange={v=>{const c=[...dishes];c[i]={...c[i],rating:v};setDishes(c)}} size={16}/>
-        {dishes.length>1&&<button style={{background:"none",border:"none",color:"#446",cursor:"pointer",fontSize:14,padding:"0 2px",lineHeight:1}} onClick={()=>setDishes(dishes.filter((_,j)=>j!==i))}>✕</button>}
+        {dishes.length>1&&<button style={{background:"none",border:"none",color:"#446",cursor:"pointer",fontSize:14,padding:"0 2px"}} onClick={()=>setDishes(dishes.filter((_,j)=>j!==i))}>✕</button>}
       </div>
     ))}
     <button style={{...S.chip,color:"#668",borderColor:"#20203a",marginBottom:8}} onClick={()=>setDishes([...dishes,{name:"",rating:0}])}>+ 加一道</button>
     <textarea style={{...S.input,minHeight:44,resize:"vertical",fontSize:13,marginTop:4,display:"block"}} placeholder="备注（可选）" value={note} onChange={e=>setNote(e.target.value)}/>
     <div style={{display:"flex",gap:8,marginTop:10}}>
-      <button style={{...S.btn,background:"transparent",color:"#446",border:"1px solid #20203a",marginTop:0,flex:1}} onClick={onCancel}>跳过</button>
-      <button style={{...S.btn,marginTop:0,flex:2}} className="press" onClick={save}>保存打卡</button>
+      <button style={{...S.btn,background:"transparent",color:"#446",border:"1px solid #20203a",marginTop:0,flex:1}} onClick={onCancel}>取消</button>
+      <button style={{...S.btn,marginTop:0,flex:2}} className="press" onClick={save}>保存</button>
     </div>
+  </div>);
+}
+
+/* ── DiceSheet ─────────────────────────────────────── */
+function DiceSheet({restaurants,cats,onClose,onDiced}){
+  const[mode,setMode]=useState("preference");
+  const[excSel,setExcSel]=useState(new Set());
+  const[result,setResult]=useState(null);
+  const[rolling,setRolling]=useState(false);
+  const[navMode,setNavMode]=useState("transit");
+
+  function roll(){
+    const pool=mode==="exclusive"?restaurants.filter(r=>excSel.has(r.id)):restaurants;
+    if(!pool.length)return;
+    setRolling(true);setResult(null);
+    setTimeout(()=>{
+      setResult(mode==="preference"?weightedRandom(pool):pool[Math.floor(Math.random()*pool.length)]);
+      setRolling(false);onDiced?.();
+    },600);
+  }
+  function toggleExc(id){setExcSel(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s});}
+
+  return(<div>
+    <div style={{display:"flex",gap:6,marginBottom:14}}>
+      <button style={{...S.chip,...(mode==="preference"?S.chipA:{})}} onClick={()=>setMode("preference")}>🎯 偏好随机</button>
+      <button style={{...S.chip,...(mode==="exclusive"?S.chipA:{})}} onClick={()=>setMode("exclusive")}>📋 手动圈定</button>
+    </div>
+    {mode==="preference"&&<div style={{fontSize:12,color:"#446",marginBottom:12}}>评分高、久未去的优先推荐</div>}
+    {mode==="exclusive"&&(
+      <div style={{maxHeight:200,overflowY:"auto",marginBottom:12,border:"1px solid #1e1e30",borderRadius:8}}>
+        {restaurants.length===0&&<div style={{padding:12,fontSize:12,color:"#334"}}>当前没有餐厅</div>}
+        {restaurants.map(r=>(
+          <div key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderBottom:"1px solid #14142a",cursor:"pointer"}}
+            onClick={()=>toggleExc(r.id)}>
+            <div style={{width:16,height:16,border:`2px solid ${excSel.has(r.id)?"#fff":"#334"}`,borderRadius:3,
+              background:excSel.has(r.id)?"#fff":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+              {excSel.has(r.id)&&<span style={{fontSize:10,color:"#0c0c14",fontWeight:900,lineHeight:1}}>✓</span>}
+            </div>
+            <span style={{fontSize:13,color:"#d0d0e0",flex:1}}>{r.name}</span>
+            <span style={{fontSize:11,color:"#446"}}>{r.area||r.category||""}</span>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {rolling&&<div style={{textAlign:"center",padding:"20px 0",fontSize:40}}>🎲</div>}
+    {result&&!rolling&&(
+      <div style={{background:"#0c0c14",borderRadius:10,padding:14,border:"1px solid #1e1e30",marginBottom:12}}>
+        <div style={{fontSize:16,fontWeight:700,color:"#f0f0f8",marginBottom:4}}>{result.name}</div>
+        <div style={{fontSize:12,color:"#446",marginBottom:6}}>📍 {result.address}{result.area&&` · ${result.area}`}</div>
+        {avgRating(result)>0&&<div style={{fontSize:13,color:"#f0b429",marginBottom:8}}>{"★".repeat(Math.round(avgRating(result)))}{"☆".repeat(5-Math.round(avgRating(result)))}</div>}
+        <div style={{...S.microLabel,marginBottom:6}}>导航方式</div>
+        <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap"}}>
+          {MODES.map(m=><button key={m.id} style={{...S.chip,...(navMode===m.id?{background:"#fff",color:"#0c0c14",borderColor:"#fff"}:{})}} onClick={()=>setNavMode(m.id)}>{m.icon} {m.label}</button>)}
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button style={{...S.btn,marginTop:0,flex:1,background:"#151f30",color:"#60a0e0",border:"1px solid #1e3050"}} onClick={()=>openBaidu(result,navMode)}>🔵 百度</button>
+          <button style={{...S.btn,marginTop:0,flex:1,background:"#152015",color:"#60c060",border:"1px solid #1e401e"}} onClick={()=>openAmap(result,navMode)}>🟢 高德</button>
+        </div>
+      </div>
+    )}
+    <button style={{...S.btn,opacity:(mode==="exclusive"&&excSel.size===0)?0.35:1}}
+      disabled={mode==="exclusive"&&excSel.size===0} className="press" onClick={roll}>
+      {result?"再抽一次 🎲":"开始抽签 🎲"}
+    </button>
   </div>);
 }
 
@@ -278,46 +377,44 @@ function App(){
   const[rs,setRs]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf_r"))||[]}catch{return[]}});
   const[cats,setCats]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf_c"))||DEF_CATS}catch{return DEF_CATS}});
   const[metroLines,setMetroLines]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf_l"))||[]}catch{return[]}});
+  const[unlocked,setUnlocked]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf_ach"))||[]}catch{return[]}});
+  const[achFlags,setAchFlags]=useState(()=>{try{return JSON.parse(localStorage.getItem("wf_achf"))||{}}catch{return{}}});
+  const[pendingAch,setPending]=useState([]);
+
   const[tab,setTab]=useState(0);
   const[view,setView]=useState(null);
   const[sel,setSel]=useState(null);
   const[navSheet,setNavSheet]=useState(null);
   const[navMode,setNavMode]=useState("transit");
+  const[diceOpen,setDiceOpen]=useState(false);
   const[search,setSearch]=useState("");
   const[fCat,setFCat]=useState("全部");
   const[fLine,setFLine]=useState("全部");
   const[sortBy,setSortBy]=useState("added");
   const[groupBy,setGroupBy]=useState("none");
   const[collapsed,setCollapsed]=useState({});
-  const[form,setForm]=useState({name:"",address:"",area:"",foundAt:"",category:"",lines:[],note:"",tags:""});
   const[selecting,setSelecting]=useState(false);
   const[selectedIds,setSelectedIds]=useState(new Set());
-
-  function toggleSelect(id){
-    setSelectedIds(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
-  }
-  function selectAll(ids){setSelectedIds(new Set(ids));}
-  function exitSelect(){setSelecting(false);setSelectedIds(new Set());}
-  function deleteSelected(){
-    if(!selectedIds.size)return;
-    if(!confirm(`删除选中的 ${selectedIds.size} 家？`))return;
-    setRs(p=>p.filter(r=>!selectedIds.has(r.id)));
-    exitSelect();
-  }
+  const[form,setForm]=useState({name:"",address:"",area:"",foundAt:"",category:"",lines:[],note:"",tags:""});
 
   useEffect(()=>{if(!form.category&&cats.length)setForm(f=>({...f,category:cats[0].name}))},[cats]);
   useEffect(()=>{try{localStorage.setItem("wf_r",JSON.stringify(rs))}catch{}},[rs]);
   useEffect(()=>{try{localStorage.setItem("wf_c",JSON.stringify(cats))}catch{}},[cats]);
   useEffect(()=>{try{localStorage.setItem("wf_l",JSON.stringify(metroLines))}catch{}},[metroLines]);
-  // Reset filters on tab change
+  useEffect(()=>{try{localStorage.setItem("wf_ach",JSON.stringify(unlocked))}catch{}},[unlocked]);
+  useEffect(()=>{try{localStorage.setItem("wf_achf",JSON.stringify(achFlags))}catch{}},[achFlags]);
   useEffect(()=>{setFCat("全部");setFLine("全部");setCollapsed({});},[tab]);
-  // Sync sel with rs — fix stale detail view, handle deletion
   useEffect(()=>{
     if(!sel)return;
     const found=rs.find(r=>r.id===sel.id);
-    if(!found){setView(null);setSel(null);}
-    else setSel(found);
+    if(!found){setView(null);setSel(null);}else setSel(found);
   },[rs]);
+
+  // Achievement checks
+  useEffect(()=>{
+    const newly=checkAch(rs,achFlags,unlocked);
+    if(newly.length){setUnlocked(p=>[...p,...newly.map(a=>a.id)]);setPending(p=>[...p,...newly]);}
+  },[rs,achFlags]);
 
   const statusFilter=tab===1?"想去":tab===2?"已去":null;
   const filtered=rs.filter(r=>{
@@ -331,45 +428,37 @@ function App(){
 
   function buildGroups(list){
     if(groupBy==="none")return[{key:null,items:list}];
-    const gKey=groupBy==="category"?"category":"area";
+    const gk=groupBy==="category"?"category":"area";
     const map={};
-    list.forEach(r=>{const k=(gKey==="category"?r.category:r.area)||"未分类";if(!map[k])map[k]=[];map[k].push(r)});
+    list.forEach(r=>{const k=(gk==="category"?r.category:r.area)||"未分类";if(!map[k])map[k]=[];map[k].push(r)});
     return Object.entries(map).filter(([,v])=>v.length>0).map(([k,items])=>({key:k,items}));
   }
-  // When searching, collapse all groups (auto-expand)
-  const effectiveCollapsed=search?{}:collapsed;
   const groups=buildGroups(sorted);
+  const effCollapsed=search?{}:collapsed;
 
-  // CRUD
   function addR(){
     if(!form.name.trim()||!form.address.trim())return;
     const cat=form.category||cats[0]?.name||"其他";
     setRs(p=>[{id:Date.now(),...form,category:cat,status:"想去",visits:[],
       tags:form.tags.split(SPLIT).filter(Boolean),createdAt:new Date().toLocaleDateString("zh-CN")},...p]);
     setForm({name:"",address:"",area:"",foundAt:"",category:cat,lines:[],note:"",tags:""});
-    setTab(1);setView(null);// go to 想去 tab
+    setTab(1);setView(null);
   }
-  function delR(id){
-    setRs(p=>p.filter(r=>r.id!==id));
-    // sel/view cleanup handled by useEffect
-  }
-  function upd(id,patch){
-    setRs(p=>p.map(r=>r.id===id?{...r,...patch}:r));
-    // sel synced via useEffect
-  }
-  function addVisit(id,visit){
-    const dishes=visit.dishes.filter(d=>d.name.trim());
-    const v={...visit,dishes};
-    setRs(p=>p.map(r=>r.id===id?{...r,visits:[...(r.visits||[]),v]}:r));
-    // sel synced via useEffect
-  }
-  function toggleStatus(id,currentStatus){
-    const newSt=currentStatus==="想去"?"已去":"想去";
+  function delR(id){setRs(p=>p.filter(r=>r.id!==id));}
+  function upd(id,patch){setRs(p=>p.map(r=>r.id===id?{...r,...patch}:r));}
+  function addVisit(id,visit){setRs(p=>p.map(r=>r.id===id?{...r,visits:[...(r.visits||[]),visit]}:r));}
+  function editVisit(rid,visit){setRs(p=>p.map(r=>r.id===rid?{...r,visits:(r.visits||[]).map(v=>v.id===visit.id?visit:v)}:r));}
+  function delVisit(rid,vid){setRs(p=>p.map(r=>r.id===rid?{...r,visits:(r.visits||[]).filter(v=>v.id!==vid)}:r));}
+  function toggleStatus(id,cur){
+    const newSt=cur==="想去"?"已去":"想去";
+    if(newSt==="想去")setAchFlags(f=>({...f,comeback:true}));
     setRs(p=>p.map(r=>r.id===id?{...r,status:newSt}:r));
   }
+  function handleShare(r){doShare(r,cats,()=>setAchFlags(f=>({...f,shared:true})));}
+  function handleDiced(){setAchFlags(f=>({...f,diced:true}));}
 
   function exportData(){
-    const d=JSON.stringify({restaurants:rs,categories:cats,metroLines,exportedAt:new Date().toISOString()},null,2);
+    const d=JSON.stringify({restaurants:rs,categories:cats,metroLines,achievements:unlocked,exportedAt:new Date().toISOString()},null,2);
     const b=new Blob([d],{type:"application/json"});const u=URL.createObjectURL(b);
     const a=document.createElement("a");a.href=u;a.download="withfriends_backup.json";a.click();URL.revokeObjectURL(u);
   }
@@ -381,9 +470,21 @@ function App(){
         if(d.restaurants)setRs(d.restaurants);
         if(d.categories)setCats(d.categories);
         if(d.metroLines)setMetroLines(d.metroLines);
+        if(d.achievements)setUnlocked(d.achievements);
         alert(`导入成功！${d.restaurants?.length||0} 家餐厅`);
       }catch{alert("文件格式错误")}
     };rd.readAsText(f);e.target.value="";
+  }
+
+  // Select
+  function toggleSelect(id){setSelectedIds(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s});}
+  function selectAll(ids){setSelectedIds(new Set(ids));}
+  function exitSelect(){setSelecting(false);setSelectedIds(new Set());}
+  function deleteSelected(){
+    if(!selectedIds.size)return;
+    if(!confirm(`删除选中的 ${selectedIds.size} 家？`))return;
+    setRs(p=>p.filter(r=>!selectedIds.has(r.id)));
+    exitSelect();
   }
 
   const wantN=rs.filter(r=>r.status==="想去").length;
@@ -399,17 +500,16 @@ function App(){
         </div>
       </div>
       <button style={S.addBtn} className="press" onClick={()=>{
-        setForm({name:"",address:"",area:"",foundAt:"",category:cats[0]?.name||"",lines:[],note:"",tags:""});
-        setView("add");
+        setForm({name:"",address:"",area:"",foundAt:"",category:cats[0]?.name||"",lines:[],note:"",tags:""});setView("add");
       }}>+ Add</button>
     </div></header>
 
     {view==="add"&&<AddView form={form} setForm={setForm} cats={cats} metroLines={metroLines} onSave={addR} onBack={()=>setView(null)}/>}
     {view==="detail"&&sel&&(
       <DetailView r={sel} cats={cats} metroLines={metroLines} upd={upd} del={delR} back={()=>setView(null)}
-        onShare={()=>doShare(sel,cats)} setNavSheet={setNavSheet}
+        onShare={()=>handleShare(sel)} setNavSheet={setNavSheet} navMode={navMode}
         onToggleStatus={()=>toggleStatus(sel.id,sel.status)}
-        onAddVisit={v=>addVisit(sel.id,v)}/>
+        onAddVisit={v=>addVisit(sel.id,v)} onEditVisit={v=>editVisit(sel.id,v)} onDelVisit={vid=>delVisit(sel.id,vid)}/>
     )}
     {view===null&&tab<3&&(
       <ListView tab={tab} search={search} setSearch={setSearch}
@@ -417,29 +517,35 @@ function App(){
         metroLines={metroLines} cats={cats}
         sortBy={sortBy} setSortBy={setSortBy}
         groupBy={groupBy} setGroupBy={setGroupBy}
-        groups={groups} collapsed={effectiveCollapsed} setCollapsed={setCollapsed}
+        groups={groups} collapsed={effCollapsed} setCollapsed={setCollapsed}
         openDetail={r=>{setSel(r);setView("detail");}}
-        upd={upd} del={delR} setNavSheet={setNavSheet}
-        onToggleStatus={toggleStatus}
+        del={delR} setNavSheet={setNavSheet} onToggleStatus={toggleStatus}
         selecting={selecting} setSelecting={setSelecting}
         selectedIds={selectedIds} toggleSelect={toggleSelect}
         selectAll={selectAll} exitSelect={exitSelect} deleteSelected={deleteSelected}
-        allFilteredIds={sorted.map(r=>r.id)}/>
+        allFilteredIds={sorted.map(r=>r.id)}
+        onDice={()=>setDiceOpen(true)}/>
     )}
     {view===null&&tab===3&&(
       <SettingsView cats={cats} setCats={setCats} metroLines={metroLines} setMetroLines={setMetroLines}
         exportData={exportData} importData={importData}
-        stats={{restaurants:rs.length,visits:totalVisits}}/>
+        stats={{restaurants:rs.length,visits:totalVisits}}
+        unlocked={unlocked} rs={rs} achFlags={achFlags}/>
     )}
 
     <BottomSheet open={!!navSheet} onClose={()=>setNavSheet(null)}>
       {navSheet&&<NavSheet r={navSheet} mode={navMode} setMode={setNavMode} onClose={()=>setNavSheet(null)}/>}
     </BottomSheet>
+    <BottomSheet open={diceOpen} onClose={()=>setDiceOpen(false)} title="今天吃什么？🎲">
+      {diceOpen&&<DiceSheet restaurants={sorted} cats={cats} onClose={()=>setDiceOpen(false)} onDiced={handleDiced}/>}
+    </BottomSheet>
+
+    <Toast ach={pendingAch[0]||null} onDismiss={()=>setPending(p=>p.slice(1))}/>
 
     <nav style={S.tabBar}>
       {[{l:"全部",i:"🏠"},{l:"想去",i:"📌"},{l:"去过",i:"✓"},{l:"设置",i:"⚙️"}].map((t,i)=>(
         <button key={i} style={{...S.tabBtn,...(tab===i?S.tabBtnA:{})}}
-          onClick={()=>{setTab(i);setView(null);setSel(null);}}>
+          onClick={()=>{setTab(i);setView(null);setSel(null);setSelecting(false);}}>
           <span style={{fontSize:16,lineHeight:1}}>{t.i}</span>
           <span style={{fontSize:10,marginTop:2}}>{t.l}</span>
         </button>
@@ -449,70 +555,66 @@ function App(){
 }
 
 /* ── ListView ──────────────────────────────────────── */
-function ListView({tab,search,setSearch,fCat,setFCat,fLine,setFLine,metroLines,cats,sortBy,setSortBy,groupBy,setGroupBy,groups,collapsed,setCollapsed,openDetail,upd,del,setNavSheet,onToggleStatus,selecting,setSelecting,selectedIds,toggleSelect,selectAll,exitSelect,deleteSelected,allFilteredIds}){
-  const groupOpts=tab===2
-    ?[["none","—"],["category","菜系"],["area","区域"]]
-    :[["none","—"],["category","菜系"],["status","状态"],["area","区域"]];
+function ListView({tab,search,setSearch,fCat,setFCat,fLine,setFLine,metroLines,cats,sortBy,setSortBy,groupBy,setGroupBy,groups,collapsed,setCollapsed,openDetail,del,setNavSheet,onToggleStatus,selecting,setSelecting,selectedIds,toggleSelect,selectAll,exitSelect,deleteSelected,allFilteredIds,onDice}){
+  const groupOpts=tab===2?[["none","—"],["category","菜系"],["area","区域"]]:[["none","—"],["category","菜系"],["status","状态"],["area","区域"]];
+  const allSel=allFilteredIds.length>0&&allFilteredIds.every(id=>selectedIds.has(id));
   return(<main style={S.main}>
-    {/* Search + multi-select toggle */}
+    {/* Search + multiselect */}
     <div style={{display:"flex",gap:8,marginBottom:12}}>
       <input style={{...S.searchInput,marginBottom:0,flex:1}} placeholder="搜餐厅、地址、菜品、区域…" value={search} onChange={e=>setSearch(e.target.value)}/>
       <button style={{...S.smallBtn,flexShrink:0,padding:"8px 12px",...(selecting?{background:"#1e1e30",color:"#a0a0c0",borderColor:"#2a2a44"}:{})}}
-        onClick={()=>{if(selecting)exitSelect();else setSelecting(true);}}>
-        {selecting?"取消":"多选"}
-      </button>
+        onClick={()=>selecting?exitSelect():setSelecting(true)}>{selecting?"取消":"多选"}</button>
     </div>
     {selecting&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,padding:"8px 12px",background:"#14142a",borderRadius:8,border:"1px solid #1e1e30"}}>
       <span style={{fontSize:12,color:"#a0a0c0"}}>已选 {selectedIds.size} 家</span>
       <div style={{display:"flex",gap:8}}>
-        <button style={{...S.chip,color:"#668"}} onClick={()=>{
-          const allSel=allFilteredIds.length>0&&allFilteredIds.every(id=>selectedIds.has(id));
-          allSel?exitSelect():selectAll(allFilteredIds);
-          if(allSel)setSelecting(true);
-        }}>{allFilteredIds.every(id=>selectedIds.has(id))&&allFilteredIds.length>0?"取消全选":"全选"}</button>
+        <button style={{...S.chip,color:"#668"}} onClick={()=>allSel?exitSelect():selectAll(allFilteredIds)}>
+          {allSel?"取消全选":"全选"}
+        </button>
         <button style={{...S.chip,color:"#f87171",borderColor:"#f8717144",background:selectedIds.size?"#f8717118":"transparent"}}
           disabled={!selectedIds.size} onClick={deleteSelected}>
-          删除 {selectedIds.size>0?`(${selectedIds.size})`:""}
+          删除{selectedIds.size>0?` (${selectedIds.size})`:""}
         </button>
       </div>
     </div>}
-    <div style={S.filterRow}>
+
+    {/* Cat + Line chips horizontal scroll */}
+    <div className="hscroll" style={{marginBottom:10}}>
       {["全部",...cats.map(c=>c.name)].map(c=>{
         const col=c!=="全部"?catColor(cats,c):null;
-        return<button key={c} style={{...S.chip,...(fCat===c?S.chipA:{}),
+        return<button key={c} style={{...S.chip,flexShrink:0,...(fCat===c?S.chipA:{}),
           ...(c!=="全部"&&fCat!==c?{borderColor:col+"44",color:col}:{})}}
           onClick={()=>setFCat(c)}>{c}</button>
       })}
-      {tab===2&&<button style={{...S.chip,...(fCat==="__warn__"?{background:"#f8717122",color:"#f87171",borderColor:"#f8717144"}:{color:"#f87171",borderColor:"#f8717133"})}}
+      {tab===2&&<button style={{...S.chip,flexShrink:0,...(fCat==="__warn__"?{background:"#f8717122",color:"#f87171",borderColor:"#f8717144"}:{color:"#f87171",borderColor:"#f8717133"})}}
         onClick={()=>setFCat(fCat==="__warn__"?"全部":"__warn__")}>⚠️ 避雷</button>}
-    </div>
-    {/* Metro line filter */}
-    {metroLines.length>0&&<div style={{...S.filterRow,marginTop:-4}}>
-      {["全部",...metroLines.map(l=>l.name)].map(l=>(
-        <button key={l} style={{...S.chip,...(fLine===l?S.chipA2:{color:"#668",borderColor:"#1e2030"})}}
-          onClick={()=>setFLine(l)}>
-          {l==="全部"?"🚇 全线":("🚇 "+l)}
-        </button>
+      {metroLines.length>0&&<div style={{width:1,background:"#1e1e30",flexShrink:0,margin:"0 2px"}}/>}
+      {metroLines.map(l=>(
+        <button key={l.name} style={{...S.chip,flexShrink:0,...(fLine===l.name?S.chipA2:{color:"#5588aa",borderColor:"#1e2a3a"})}}
+          onClick={()=>setFLine(fLine===l.name?"全部":l.name)}>🚇 {l.name}</button>
       ))}
-    </div>}
-    {/* Sort + Group */}
-    <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
-      <div style={{display:"flex",alignItems:"center",gap:4}}>
-        <span style={S.microLabel}>排序</span>
+    </div>
+
+    {/* Sort + Group + Dice */}
+    <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+      <div style={{display:"flex",alignItems:"center",gap:3}}>
+        <span style={{...S.microLabel,marginRight:2}}>排序</span>
         {[["added","时间"],["rating","评分"],["recent","最近"]].map(([v,l])=>
           <button key={v} style={{...S.chip,...(sortBy===v?S.chipA2:{})}} onClick={()=>setSortBy(v)}>{l}</button>)}
       </div>
-      <div style={{display:"flex",alignItems:"center",gap:4}}>
-        <span style={S.microLabel}>归类</span>
+      <div style={{display:"flex",alignItems:"center",gap:3}}>
+        <span style={{...S.microLabel,marginRight:2}}>归类</span>
         {groupOpts.map(([v,l])=>
           <button key={v} style={{...S.chip,...(groupBy===v?S.chipA2:{})}} onClick={()=>setGroupBy(v)}>{l}</button>)}
       </div>
+      <button style={{...S.chip,marginLeft:"auto",fontSize:16,padding:"4px 10px"}} onClick={onDice} title="随机抽签">🎲</button>
     </div>
+
     {groups.every(g=>g.items.length===0)?(
       <div style={S.empty}><div style={{fontSize:36,marginBottom:10}}>🍽️</div>
         <div style={{color:"#33334a",fontSize:13}}>No spots here</div></div>
     ):(
-      <div style={{display:"flex",flexDirection:"column"}}>
+      <div>
         {groups.map(({key,items})=>items.length===0?null:(
           <div key={key||"all"}>
             {key!==null&&<button style={{...S.groupHdr,borderLeft:`3px solid ${groupBy==="category"?catColor(cats,key):"#446"}`}}
@@ -521,15 +623,16 @@ function ListView({tab,search,setSearch,fCat,setFCat,fLine,setFLine,metroLines,c
                 <span style={{fontSize:13,fontWeight:600,color:"#d0d0e0"}}>{key}</span>
                 <span style={{fontSize:11,color:"#446"}}>{items.length}</span>
               </span>
-              <span style={{fontSize:12,color:"#334",display:"inline-block",
-                transform:collapsed[key]?"rotate(-90deg)":"rotate(0)",transition:"transform 0.2s"}}>▾</span>
+              <span style={{fontSize:12,color:"#334",display:"inline-block",transform:collapsed[key]?"rotate(-90deg)":"rotate(0)",transition:"transform 0.2s"}}>▾</span>
             </button>}
             {!collapsed[key]&&items.map(r=>(
-              <SwipeCard key={r.id} onDelete={()=>del(r.id)} disabled={selecting}>
-                <Card r={r} cats={cats} onOpen={()=>selecting?toggleSelect(r.id):openDetail(r)} onNav={()=>setNavSheet(r)}
-                  onToggle={()=>onToggleStatus(r.id,r.status)}
-                  selecting={selecting} selected={selectedIds.has(r.id)} onSelect={()=>toggleSelect(r.id)}/>
-              </SwipeCard>
+              <CollapseWrapper key={r.id} r={r} cats={cats}>
+                <SwipeCard onDelete={()=>del(r.id)} disabled={selecting}>
+                  <Card r={r} cats={cats} onOpen={()=>selecting?toggleSelect(r.id):openDetail(r)}
+                    onNav={()=>setNavSheet(r)} onToggle={()=>onToggleStatus(r.id,r.status)}
+                    selecting={selecting} selected={selectedIds.has(r.id)} onSelect={()=>toggleSelect(r.id)}/>
+                </SwipeCard>
+              </CollapseWrapper>
             ))}
           </div>
         ))}
@@ -544,18 +647,17 @@ function Card({r,cats,onOpen,onNav,onToggle,selecting=false,selected=false,onSel
   const accent=warn?"#f87171":been?"#6ee7b7":catColor(cats,r.category);
   const vc=(r.visits||[]).length;const lv=lastVisit(r);
   return(<div style={{...S.card,borderLeft:`3px solid ${selecting&&selected?"#fff":accent+"44"}`,
-    outline:selecting&&selected?"2px solid #ffffff30":"none"}}>
+    outline:selecting&&selected?"2px solid #ffffff20":"none"}}>
     <div style={S.cardBody} onClick={onOpen}>
       <div style={S.cardRow}>
         {selecting&&<button onClick={e=>{e.stopPropagation();onSelect();}}
-          style={{background:"none",border:`2px solid ${selected?"#fff":"#334"}`,borderRadius:4,
-            width:18,height:18,marginRight:8,flexShrink:0,cursor:"pointer",
-            background:selected?"#fff":"transparent",display:"flex",alignItems:"center",justifyContent:"center"}}>
-          {selected&&<span style={{fontSize:11,color:"#0c0c14",fontWeight:900}}>✓</span>}
+          style={{background:selected?"#fff":"transparent",border:`2px solid ${selected?"#fff":"#334"}`,
+            borderRadius:3,width:18,height:18,marginRight:8,flexShrink:0,cursor:"pointer",
+            display:"flex",alignItems:"center",justifyContent:"center"}}>
+          {selected&&<span style={{fontSize:10,color:"#0c0c14",fontWeight:900,lineHeight:1}}>✓</span>}
         </button>}
         <span style={S.cardName}>{r.name}</span>
-        <span style={{...S.badge,background:warn?"#f8717118":been?"#6ee7b718":"#ffffff08",
-          color:warn?"#f87171":been?"#6ee7b7":"#556"}}>
+        <span style={{...S.badge,background:warn?"#f8717118":been?"#6ee7b718":"#ffffff08",color:warn?"#f87171":been?"#6ee7b7":"#556"}}>
           {warn?"避雷 ⚠️":been?`✓ ${vc}次`:"想去"}
         </span>
       </div>
@@ -578,27 +680,25 @@ function Card({r,cats,onOpen,onNav,onToggle,selecting=false,selected=false,onSel
 }
 
 /* ── DetailView ────────────────────────────────────── */
-function DetailView({r,cats,metroLines,upd,del,back,onShare,setNavSheet,onToggleStatus,onAddVisit}){
+function DetailView({r,cats,metroLines,upd,del,back,onShare,setNavSheet,navMode,onToggleStatus,onAddVisit,onEditVisit,onDelVisit}){
   const color=catColor(cats,r.category);
   const been=r.status==="已去";const ar=avgRating(r);const warn=been&&ar>0&&ar<=2;
   const[editing,setEditing]=useState(false);
   const[ef,setEf]=useState(null);
   const[addingVisit,setAddingVisit]=useState(false);
+  const[editingVisit,setEditingVisit]=useState(null);// visit object being edited
 
   function startEdit(){
     setEf({name:r.name,address:r.address,area:r.area||"",foundAt:r.foundAt||"",
       category:r.category,lines:r.lines||[],note:r.note||"",tags:(r.tags||[]).join("、")});
     setEditing(true);
   }
-  function saveEdit(){
-    upd(r.id,{...ef,tags:ef.tags.split(SPLIT).filter(Boolean)});
-    setEditing(false);setEf(null);
-  }
+  function saveEdit(){upd(r.id,{...ef,tags:ef.tags.split(SPLIT).filter(Boolean)});setEditing(false);setEf(null);}
   function handleToggle(){
+    if(addingVisit&&!confirm("当前打卡记录未保存，确认放弃？"))return;
     const newSt=r.status==="想去"?"已去":"想去";
     onToggleStatus();
-    if(newSt==="已去")setAddingVisit(true);
-    else setAddingVisit(false);
+    if(newSt==="已去"){setAddingVisit(true);}else{setAddingVisit(false);}
   }
 
   return(<main style={S.main}><div style={S.formCard}>
@@ -606,12 +706,10 @@ function DetailView({r,cats,metroLines,upd,del,back,onShare,setNavSheet,onToggle
       <button style={S.backBtn} onClick={back}>← Back</button>
       <div style={{display:"flex",gap:8}}>
         <button style={S.smallBtn} onClick={onShare}>📤 分享</button>
-        <button style={{...S.smallBtn,color:"#664",borderColor:"#2a1a1a"}}
-          onClick={()=>{if(confirm(`删除「${r.name}」？`))del(r.id)}}>🗑️</button>
+        <button style={{...S.smallBtn,color:"#664",borderColor:"#2a1a1a"}} onClick={()=>{if(confirm(`删除「${r.name}」？`))del(r.id)}}>🗑️</button>
       </div>
     </div>
 
-    {/* Banner */}
     <div style={{...S.detBanner,borderBottom:`1px solid ${color}30`,background:`linear-gradient(135deg,${color}14,transparent)`}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
         <div>
@@ -633,39 +731,31 @@ function DetailView({r,cats,metroLines,upd,del,back,onShare,setNavSheet,onToggle
         <button style={S.editBtn} onClick={editing?saveEdit:startEdit}>{editing?"✓ 保存":"编辑"}</button>
       </div>
       {editing&&ef?(<div>
-        <label style={S.label}>名称</label>
-        <input style={S.input} value={ef.name} onChange={e=>setEf({...ef,name:e.target.value})}/>
-        <label style={S.label}>地址</label>
-        <input style={S.input} value={ef.address} onChange={e=>setEf({...ef,address:e.target.value})}/>
-        <label style={S.label}>区域（商圈 / 地标）</label>
-        <input style={S.input} placeholder="三里屯、国贸" value={ef.area} onChange={e=>setEf({...ef,area:e.target.value})}/>
+        <label style={S.label}>名称</label><input style={S.input} value={ef.name} onChange={e=>setEf({...ef,name:e.target.value})}/>
+        <label style={S.label}>地址</label><input style={S.input} value={ef.address} onChange={e=>setEf({...ef,address:e.target.value})}/>
+        <label style={S.label}>区域</label><input style={S.input} placeholder="三里屯 / 国贸" value={ef.area} onChange={e=>setEf({...ef,area:e.target.value})}/>
         <label style={S.label}>地铁线路</label>
         <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
-          {metroLines.length===0&&<span style={{fontSize:12,color:"#334"}}>请先在设置中添加常用线路</span>}
+          {metroLines.length===0&&<span style={{fontSize:12,color:"#334"}}>请先在设置中添加线路</span>}
           {metroLines.map(l=>{const on=(ef.lines||[]).includes(l.name);return(
             <button key={l.name} style={{...S.chip,...(on?{background:"#1e2a3a",color:"#5588aa",borderColor:"#2a3a4a"}:{})}}
-              onClick={()=>setEf({...ef,lines:on?(ef.lines||[]).filter(x=>x!==l.name):[...(ef.lines||[]),l.name]})}>
-              🚇 {l.name}</button>
+              onClick={()=>setEf({...ef,lines:on?(ef.lines||[]).filter(x=>x!==l.name):[...(ef.lines||[]),l.name]})}>🚇 {l.name}</button>
           );})}
         </div>
-        <label style={S.label}>发现于</label>
-        <input style={S.input} value={ef.foundAt} onChange={e=>setEf({...ef,foundAt:e.target.value})}/>
+        <label style={S.label}>发现于</label><input style={S.input} placeholder="在哪条街看到的" value={ef.foundAt} onChange={e=>setEf({...ef,foundAt:e.target.value})}/>
         <label style={S.label}>分类</label>
         <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
           {cats.map(c=><button key={c.name} style={{...S.chip,...(ef.category===c.name?{background:c.color,color:"#fff",borderColor:c.color}:{borderColor:c.color+"66",color:c.color})}}
             onClick={()=>setEf({...ef,category:c.name})}>{c.name}</button>)}
         </div>
-        <label style={S.label}>备注</label>
-        <textarea style={{...S.input,minHeight:56,resize:"vertical"}} value={ef.note} onChange={e=>setEf({...ef,note:e.target.value})}/>
-        <label style={S.label}>标签</label>
-        <input style={S.input} value={ef.tags} onChange={e=>setEf({...ef,tags:e.target.value})}/>
+        <label style={S.label}>备注</label><textarea style={{...S.input,minHeight:56,resize:"vertical"}} value={ef.note} onChange={e=>setEf({...ef,note:e.target.value})}/>
+        <label style={S.label}>标签</label><input style={S.input} value={ef.tags} onChange={e=>setEf({...ef,tags:e.target.value})}/>
       </div>):(<div>
         <div style={S.infoRow}><span style={S.di}>📍</span><span style={S.dv}>{r.address}{r.area&&<span style={{color:"#446"}}> · {r.area}</span>}</span></div>
         {(r.lines||[]).length>0&&<div style={S.infoRow}><span style={S.di}>🚇</span><span style={S.dv}>{r.lines.join(" · ")}</span></div>}
         {r.foundAt&&<div style={S.infoRow}><span style={S.di}>🔍</span><span style={S.dv}>发现于 {r.foundAt}</span></div>}
         {r.note&&<div style={S.infoRow}><span style={S.di}>✏️</span><span style={S.dv}>{r.note}</span></div>}
-        {r.tags?.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>
-          {r.tags.map(t=><span key={t} style={S.tag}>{t}</span>)}</div>}
+        {r.tags?.length>0&&<div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>{r.tags.map(t=><span key={t} style={S.tag}>{t}</span>)}</div>}
       </div>)}
     </div>
 
@@ -673,31 +763,40 @@ function DetailView({r,cats,metroLines,upd,del,back,onShare,setNavSheet,onToggle
     <div style={{...S.section,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
       <button style={{...S.toggleBtn,color:been?"#6ee7b7":"#f0b429",borderColor:been?"#6ee7b730":"#f0b42930"}}
         onClick={handleToggle}>{been?"↩ 改为想去":"✓ 标记去过"}</button>
-      {been&&ar>0&&<div style={{fontSize:13,color:"#f0b429"}}>
-        {"★".repeat(Math.round(ar))}{"☆".repeat(5-Math.round(ar))}
-        <span style={{fontSize:10,color:"#334",marginLeft:4}}>均分</span>
-      </div>}
+      {been&&ar>0&&<div style={{fontSize:13,color:"#f0b429"}}>{"★".repeat(Math.round(ar))}{"☆".repeat(5-Math.round(ar))}<span style={{fontSize:10,color:"#334",marginLeft:4}}>均分</span></div>}
     </div>
 
     {/* Visits */}
     {been&&<div style={S.section}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <span style={S.microLabel}>打卡 ({(r.visits||[]).length}次)</span>
-        {!addingVisit&&<button style={S.editBtn} onClick={()=>setAddingVisit(true)}>+ 再去一次</button>}
+        {!addingVisit&&!editingVisit&&<button style={S.editBtn} onClick={()=>setAddingVisit(true)}>+ 再去一次</button>}
       </div>
-      {addingVisit&&<VisitForm onSave={v=>{onAddVisit(v);setAddingVisit(false)}} onCancel={()=>setAddingVisit(false)}/>}
+      {addingVisit&&<VisitForm onSave={v=>{onAddVisit(v);setAddingVisit(false);}} onCancel={()=>setAddingVisit(false)}/>}
       {(r.visits||[]).length===0&&!addingVisit&&<div style={{fontSize:12,color:"#222236"}}>还没有打卡记录</div>}
       {(r.visits||[]).slice().reverse().map(v=>(
-        <div key={v.id} style={S.visitCard}>
-          <div style={{fontSize:12,color:"#446",fontWeight:600,marginBottom:6}}>📅 {v.date}</div>
-          {(v.dishes||[]).length===0&&<div style={{fontSize:12,color:"#2a2a3a"}}>未记录菜品</div>}
-          {(v.dishes||[]).map((d,i)=>(
-            <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
-              <span style={{fontSize:13,color:"#9090a8"}}>{d.name}</span>
-              {d.rating>0&&<Stars value={d.rating} size={13} readonly={true}/>}
+        <div key={v.id}>
+          {editingVisit?.id===v.id?(
+            <VisitForm initial={v} onSave={nv=>{onEditVisit(nv);setEditingVisit(null);}} onCancel={()=>setEditingVisit(null)}/>
+          ):(
+            <div style={S.visitCard}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div style={{fontSize:12,color:"#446",fontWeight:600}}>📅 {v.date}</div>
+                <div style={{display:"flex",gap:6}}>
+                  <button style={{background:"none",border:"none",color:"#446",cursor:"pointer",fontSize:11}} onClick={()=>setEditingVisit(v)}>编辑</button>
+                  <button style={{background:"none",border:"none",color:"#664",cursor:"pointer",fontSize:11}} onClick={()=>{if(confirm("删除这次打卡？"))onDelVisit(v.id);}}>🗑️</button>
+                </div>
+              </div>
+              {(v.dishes||[]).length===0&&<div style={{fontSize:12,color:"#2a2a3a"}}>未记录菜品</div>}
+              {(v.dishes||[]).map((d,i)=>(
+                <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+                  <span style={{fontSize:13,color:"#9090a8"}}>{d.name}</span>
+                  {d.rating>0&&<Stars value={d.rating} size={13} readonly={true}/>}
+                </div>
+              ))}
+              {v.note&&<div style={{fontSize:12,color:"#446",marginTop:4}}>{v.note}</div>}
             </div>
-          ))}
-          {v.note&&<div style={{fontSize:12,color:"#446",marginTop:4}}>{v.note}</div>}
+          )}
         </div>
       ))}
     </div>}
@@ -709,6 +808,7 @@ function DetailView({r,cats,metroLines,upd,del,back,onShare,setNavSheet,onToggle
 
 /* ── AddView ───────────────────────────────────────── */
 function AddView({form,setForm,cats,metroLines,onSave,onBack}){
+  const[more,setMore]=useState(false);
   return(<main style={S.main}><div style={S.formCard}>
     <button style={S.backBtn} onClick={onBack}>← Back</button>
     <h2 style={S.formTitle}>Add a spot</h2>
@@ -717,52 +817,52 @@ function AddView({form,setForm,cats,metroLines,onSave,onBack}){
     <label style={S.label}>地址 <span style={{color:"#f87171"}}>*</span></label>
     <input style={S.input} placeholder="详细地址（导航用）" value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/>
     <label style={S.label}>区域（商圈 / 地标）</label>
-    <input style={S.input} placeholder="三里屯、国贸、陆家嘴" value={form.area} onChange={e=>setForm({...form,area:e.target.value})}/>
+    <input style={S.input} placeholder="如：三里屯、国贸、陆家嘴" value={form.area} onChange={e=>setForm({...form,area:e.target.value})}/>
     <label style={S.label}>地铁线路</label>
     <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
       {metroLines.length===0&&<span style={{fontSize:12,color:"#334"}}>请先在设置中添加常用线路</span>}
       {metroLines.map(l=>{const on=(form.lines||[]).includes(l.name);return(
         <button key={l.name} style={{...S.chip,...(on?{background:"#1e2a3a",color:"#5588aa",borderColor:"#2a3a4a"}:{})}}
-          onClick={()=>setForm({...form,lines:on?(form.lines||[]).filter(x=>x!==l.name):[...(form.lines||[]),l.name]})}>
-          🚇 {l.name}</button>
+          onClick={()=>setForm({...form,lines:on?(form.lines||[]).filter(x=>x!==l.name):[...(form.lines||[]),l.name]})}>🚇 {l.name}</button>
       );})}
     </div>
-    <label style={S.label}>在哪看到的</label>
-    <input style={S.input} placeholder="发现于" value={form.foundAt} onChange={e=>setForm({...form,foundAt:e.target.value})}/>
     <label style={S.label}>分类</label>
     <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
       {cats.map(c=><button key={c.name} style={{...S.chip,...(form.category===c.name?{background:c.color,color:"#fff",borderColor:c.color}:{borderColor:c.color+"66",color:c.color})}}
         onClick={()=>setForm({...form,category:c.name})}>{c.name}</button>)}
     </div>
-    <label style={S.label}>备注</label>
-    <textarea style={{...S.input,minHeight:56,resize:"vertical"}} placeholder="氛围、推荐菜…" value={form.note} onChange={e=>setForm({...form,note:e.target.value})}/>
-    <label style={S.label}>标签（逗号或分号分隔）</label>
-    <input style={S.input} placeholder="辣；宵夜；聚餐" value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})}/>
+
+    {/* More fields collapsible */}
+    <button style={{...S.editBtn,marginTop:8,display:"flex",alignItems:"center",gap:4}} onClick={()=>setMore(!more)}>
+      <span style={{fontSize:12,display:"inline-block",transform:more?"rotate(0)":"rotate(-90deg)",transition:"transform 0.2s"}}>▾</span>
+      {more?"收起":"更多字段（发现于、备注、标签）"}
+    </button>
+    {more&&<div style={{marginTop:8}}>
+      <label style={S.label}>在哪看到的</label>
+      <input style={S.input} placeholder="在哪条街看到的" value={form.foundAt} onChange={e=>setForm({...form,foundAt:e.target.value})}/>
+      <label style={S.label}>备注</label>
+      <textarea style={{...S.input,minHeight:56,resize:"vertical"}} placeholder="氛围、推荐菜…" value={form.note} onChange={e=>setForm({...form,note:e.target.value})}/>
+      <label style={S.label}>标签（逗号或分号分隔）</label>
+      <input style={S.input} placeholder="辣；宵夜；聚餐" value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})}/>
+    </div>}
+
     <button style={{...S.btn,opacity:form.name&&form.address?1:0.35}} disabled={!form.name||!form.address}
       onClick={onSave} className="press">Save ✓</button>
   </div></main>);
 }
 
 /* ── SettingsView ──────────────────────────────────── */
-function SettingsView({cats,setCats,metroLines,setMetroLines,exportData,importData,stats}){
+function SettingsView({cats,setCats,metroLines,setMetroLines,exportData,importData,stats,unlocked,rs,achFlags}){
   const[catsOpen,setCatsOpen]=useState(false);
-  const[linesOpen,setLinesOpen]=useState(false);
   const[colorFor,setColorFor]=useState(null);
   const[newCat,setNewCat]=useState("");const[newCatColor,setNewCatColor]=useState(COLORS[0]);
   const[newLine,setNewLine]=useState("");
   const[err,setErr]=useState("");
+  const[achOpen,setAchOpen]=useState(false);
   const fileRef=useRef();
 
-  function addCat(){
-    const n=newCat.trim();if(!n)return;
-    if(cats.find(c=>c.name===n)){setErr("已有同名菜系");return}
-    setCats(p=>[...p,{name:n,color:newCatColor}]);setNewCat("");setErr("");
-  }
-  function addLine(){
-    const n=newLine.trim();if(!n)return;
-    if(metroLines.find(l=>l.name===n)){setErr("已有该线路");return}
-    setMetroLines(p=>[...p,{name:n}]);setNewLine("");setErr("");
-  }
+  function addCat(){const n=newCat.trim();if(!n)return;if(cats.find(c=>c.name===n)){setErr("已有同名");return}setCats(p=>[...p,{name:n,color:newCatColor}]);setNewCat("");setErr("");}
+  function addLine(){const n=newLine.trim();if(!n)return;if(metroLines.find(l=>l.name===n)){setErr("已有该线路");return}setMetroLines(p=>[...p,{name:n}]);setNewLine("");setErr("");}
 
   return(<main style={S.main}><div style={S.formCard}>
     <h2 style={S.formTitle}>设置</h2>
@@ -796,40 +896,62 @@ function SettingsView({cats,setCats,metroLines,setMetroLines,exportData,importDa
       {err&&<div style={{fontSize:12,color:"#f87171",marginBottom:6}}>{err}</div>}
       <div style={{display:"flex",gap:6,alignItems:"center"}}>
         <input style={{...S.input,flex:1,padding:"7px 10px",fontSize:13}} placeholder="新菜系"
-          value={newCat} onChange={e=>{setNewCat(e.target.value);setErr("")}}
-          onKeyDown={e=>e.key==="Enter"&&addCat()}/>
-        <div style={{display:"flex",gap:3}}>
-          {COLORS.slice(0,7).map(col=><button key={col} style={{width:16,height:16,borderRadius:3,border:"none",cursor:"pointer",background:col,
-            outline:newCatColor===col?"2px solid #fff":"none",outlineOffset:1}} onClick={()=>setNewCatColor(col)}/>)}
-        </div>
+          value={newCat} onChange={e=>{setNewCat(e.target.value);setErr("")}} onKeyDown={e=>e.key==="Enter"&&addCat()}/>
+        <div style={{display:"flex",gap:3}}>{COLORS.slice(0,7).map(col=><button key={col} style={{width:16,height:16,borderRadius:3,border:"none",cursor:"pointer",background:col,outline:newCatColor===col?"2px solid #fff":"none",outlineOffset:1}} onClick={()=>setNewCatColor(col)}/>)}</div>
         <button style={{background:"#fff",color:"#0c0c14",border:"none",borderRadius:8,padding:"7px 12px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}} onClick={addCat}>+</button>
       </div>
     </div>}
 
-    {/* Metro Lines */}
-    <button style={{...S.collapseHdr,marginTop:8}} onClick={()=>setLinesOpen(!linesOpen)}>
-      <span style={{fontSize:13,fontWeight:600,color:"#d0d0e0"}}>地铁线路</span>
-      <span style={{fontSize:12,color:"#334",display:"inline-block",transform:linesOpen?"rotate(0)":"rotate(-90deg)",transition:"transform 0.2s"}}>▾</span>
-    </button>
-    {linesOpen&&<div style={{...S.section,borderRadius:"0 0 10px 10px",borderTop:"none"}}>
+    {/* Metro Lines - flat */}
+    <div style={{marginTop:16}}>
+      <div style={{...S.microLabel,marginBottom:8}}>地铁线路</div>
       <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
         {metroLines.length===0&&<span style={{fontSize:12,color:"#334"}}>还没有线路，添加你常用的</span>}
         {metroLines.map(l=>(
-          <div key={l.name} style={{display:"inline-flex",alignItems:"center",gap:4,background:"#14142a",borderRadius:20,padding:"4px 8px 4px 8px",border:"1px solid #1e2a3a"}}>
+          <div key={l.name} style={{display:"inline-flex",alignItems:"center",gap:4,background:"#14142a",borderRadius:20,padding:"4px 10px",border:"1px solid #1e2a3a"}}>
             <span style={{fontSize:12,color:"#5588aa"}}>🚇 {l.name}</span>
-            <button style={{background:"none",border:"none",cursor:"pointer",color:"#334",fontSize:11,padding:"0 0 0 2px",lineHeight:1}}
-              onClick={()=>setMetroLines(p=>p.filter(x=>x.name!==l.name))}>✕</button>
+            <button style={{background:"none",border:"none",cursor:"pointer",color:"#334",fontSize:11,padding:"0 0 0 4px",lineHeight:1}} onClick={()=>setMetroLines(p=>p.filter(x=>x.name!==l.name))}>✕</button>
           </div>
         ))}
       </div>
-      {err&&<div style={{fontSize:12,color:"#f87171",marginBottom:6}}>{err}</div>}
       <div style={{display:"flex",gap:6,alignItems:"center"}}>
         <input style={{...S.input,flex:1,padding:"7px 10px",fontSize:13}} placeholder="如：1号线、10号线"
-          value={newLine} onChange={e=>{setNewLine(e.target.value);setErr("")}}
-          onKeyDown={e=>e.key==="Enter"&&addLine()}/>
+          value={newLine} onChange={e=>{setNewLine(e.target.value);setErr("")}} onKeyDown={e=>e.key==="Enter"&&addLine()}/>
         <button style={{background:"#fff",color:"#0c0c14",border:"none",borderRadius:8,padding:"7px 12px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}} onClick={addLine}>+</button>
       </div>
-    </div>}
+      {err&&<div style={{fontSize:12,color:"#f87171",marginTop:6}}>{err}</div>}
+    </div>
+
+    {/* Achievements */}
+    <div style={{marginTop:20}}>
+      <button style={{...S.collapseHdr,marginTop:0}} onClick={()=>setAchOpen(!achOpen)}>
+        <span style={{fontSize:13,fontWeight:600,color:"#d0d0e0"}}>成就 🏆 ({unlocked.length}/{ACH.length})</span>
+        <span style={{fontSize:12,color:"#334",display:"inline-block",transform:achOpen?"rotate(0)":"rotate(-90deg)",transition:"transform 0.2s"}}>▾</span>
+      </button>
+      {achOpen&&<div style={{...S.section,borderRadius:"0 0 10px 10px",borderTop:"none"}}>
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {ACH.map(a=>{
+            const p=a.prog(rs,achFlags);const done=unlocked.includes(a.id);
+            const pct=Math.min(p.c/p.t,1);
+            if(!done&&a.hidden)return(
+              <div key={a.id} style={{width:56,display:"flex",flexDirection:"column",alignItems:"center",gap:3,opacity:0.3}}>
+                <div style={{fontSize:28}}>❓</div>
+                <div style={{fontSize:9,color:"#446",textAlign:"center"}}>???</div>
+              </div>);
+            return(
+              <div key={a.id} style={{width:64,display:"flex",flexDirection:"column",alignItems:"center",gap:3,opacity:done?1:0.45}}>
+                <div style={{fontSize:28,filter:done?"none":"grayscale(1)"}}>{a.icon}</div>
+                <div style={{fontSize:9,color:done?"#d0d0e0":"#556",textAlign:"center",lineHeight:1.2}}>{a.name}</div>
+                {!done&&p.t>1&&<div style={{width:40,height:3,background:"#1e1e30",borderRadius:2}}>
+                  <div style={{width:`${pct*100}%`,height:"100%",background:"#4a9e6e",borderRadius:2}}/>
+                </div>}
+                {!done&&p.t>1&&<div style={{fontSize:8,color:"#334"}}>{p.c}/{p.t}</div>}
+                {done&&<div style={{fontSize:8,color:"#6ee7b7"}}>✓</div>}
+              </div>);
+          })}
+        </div>
+      </div>}
+    </div>
 
     {/* Data */}
     <div style={{marginTop:20}}>
@@ -841,7 +963,6 @@ function SettingsView({cats,setCats,metroLines,setMetroLines,exportData,importDa
       <div style={{fontSize:11,color:"#1e1e2e",marginTop:10,textAlign:"center"}}>定期导出，换手机不丢数据</div>
     </div>
 
-    {/* About */}
     <div style={{marginTop:20,paddingTop:16,borderTop:"1px solid #14142a"}}>
       <div style={S.microLabel}>关于</div>
       <div style={{fontSize:12,color:"#223",marginTop:6}}>withfriends v{VER}</div>
@@ -858,8 +979,7 @@ const S={
   logoS:{fontSize:10,color:"#334",marginTop:1},
   addBtn:{background:"#fff",color:"#0c0c14",border:"none",borderRadius:16,padding:"7px 16px",fontSize:13,fontWeight:700,cursor:"pointer"},
   main:{maxWidth:600,margin:"0 auto",padding:"14px 14px 20px"},
-  searchInput:{width:"100%",background:"#12121c",border:"1px solid #1c1c2e",borderRadius:10,color:"#d0d0e0",padding:"9px 14px",fontSize:14,boxSizing:"border-box",marginBottom:12},
-  filterRow:{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10},
+  searchInput:{width:"100%",background:"#12121c",border:"1px solid #1c1c2e",borderRadius:10,color:"#d0d0e0",padding:"9px 14px",fontSize:14,boxSizing:"border-box"},
   chip:{background:"transparent",border:"1px solid #1c1c2e",borderRadius:12,padding:"4px 10px",fontSize:11,cursor:"pointer",color:"#446"},
   chipA:{background:"#fff",borderColor:"#fff",color:"#0c0c14",fontWeight:600},
   chipA2:{background:"#1e1e30",borderColor:"#2a2a44",color:"#a0a0c0"},
@@ -869,7 +989,7 @@ const S={
   card:{background:"#10101a",border:"1px solid #18182a",borderRadius:12,overflow:"hidden"},
   cardBody:{padding:"12px 14px 8px",cursor:"pointer"},
   cardRow:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4},
-  cardName:{fontSize:15,fontWeight:600,color:"#f0f0f8",letterSpacing:-0.2},
+  cardName:{fontSize:15,fontWeight:600,color:"#f0f0f8",letterSpacing:-0.2,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginRight:6},
   cardAddr:{fontSize:12,color:"#33344a",marginBottom:2},
   badge:{fontSize:10,padding:"2px 8px",borderRadius:8,fontWeight:700,letterSpacing:0.2,flexShrink:0},
   cardActs:{display:"flex",alignItems:"center",gap:5,padding:"8px 14px",borderTop:"1px solid #14142a"},
